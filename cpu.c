@@ -556,6 +556,145 @@ static __isl_give isl_schedule_node *tile(__isl_take isl_schedule_node *node,
 	return node;
 }
 
+/* Compute inter-tile flow depedences.
+ */
+__isl_give isl_union_map *compute_inter_tile_flow_dep
+	(__isl_take isl_schedule_node *node,
+	struct ppcg_scop *scop)
+{
+	isl_union_map *may_source, *schedule_map, *result;
+	isl_union_access_info *access;
+	isl_union_flow *flow;
+
+	if (!scop)
+		return NULL;
+
+	if (!node || isl_schedule_node_get_type(node)!=isl_schedule_node_band)
+		return NULL;
+
+	schedule_map = isl_schedule_node_band_get_partial_schedule_union_map(node);	
+
+	may_source = isl_union_map_copy(scop->may_writes);
+	access = isl_union_access_info_from_sink(
+				isl_union_map_copy(scop->reads));
+	access = isl_union_access_info_set_kill(access,
+				isl_union_map_copy(scop->must_writes));
+	access = isl_union_access_info_set_may_source(access, may_source);
+	access = isl_union_access_info_set_schedule_map(access,
+				schedule_map);
+	flow = isl_union_access_info_compute_flow(access);
+
+	result = isl_union_flow_get_may_dependence(flow);
+	
+	isl_union_flow_free(flow);
+
+	return result;
+}
+
+/* Tile the band node "node" with tile sizes "sizes" and
+ * mark all members of the resulting tile node as "atomic".
+ */
+static __isl_give isl_schedule_node *try_split_tile(
+	__isl_take isl_schedule_node *node,
+	__isl_take isl_multi_val *sizes,
+	struct ppcg_scop *scop)
+{
+	isl_union_map *point_dep, *tile_dep;
+	isl_union_set *domain, *remain, *tile_dep_source;
+	isl_union_set_list *phase;
+	int i=0;
+
+	domain = isl_schedule_node_get_domain(node);
+	remain = isl_union_set_copy(domain);
+
+	isl_ctx *ctx = isl_schedule_node_get_ctx(node);
+	phase = isl_union_set_list_alloc(ctx, 0);
+
+	//1. apply parallelogram tiling
+	node = isl_schedule_node_band_tile(node, sizes);
+
+	//2. compute transitive closure of intra-tile dependences
+	int exact=0;
+	point_dep = isl_union_map_copy(scop->dep_flow);
+	point_dep = isl_union_map_transitive_closure(point_dep, &exact);
+	if(!exact)
+		return node;
+
+	//3. compute inter-tile flow dependences
+	tile_dep = compute_inter_tile_flow_dep(node, scop);
+	if(!tile_dep)
+		return node;
+
+	//4. compute source of inter-tile dependences
+	tile_dep_source = isl_union_map_domain(isl_union_map_copy(tile_dep));
+	/*printf("*********inter-tile dependences domain %d************\n", i);
+	isl_union_set_dump(tile_dep_source);*/
+
+	while(!isl_union_set_is_empty(tile_dep_source)){
+
+		//5. compute sink of inter-tile dependences
+		isl_union_set *tile_dep_sink = isl_union_set_apply(
+			isl_union_set_copy(tile_dep_source), isl_union_map_copy(tile_dep));
+		/*printf("*********inter-tile dependences range %d************\n", i);
+		isl_union_set_dump(tile_dep_sink);*/
+	
+		/* 6. compute all elements within tiles 
+		 * that depends on sink of inter-tile dependences
+		 */
+		isl_union_set *point_dep_sink = isl_union_set_apply(
+			isl_union_set_copy(tile_dep_sink), isl_union_map_copy(point_dep));
+		/*printf("*********intra-tile dependences range %d************\n", i);
+		isl_union_set_dump(point_dep_sink);*/
+
+		//7. compute all inter-tile-dependent elements within tiles
+		point_dep_sink = isl_union_set_union(point_dep_sink, tile_dep_sink);
+		/*printf("*********dependent elements %d************\n", i);
+		isl_union_set_dump(point_dep_sink);*/
+
+		//8. compute all free element within tiles
+		isl_union_set *free_set = isl_union_set_subtract(
+			isl_union_set_copy(remain), point_dep_sink);
+		free_set = isl_union_set_coalesce(free_set);
+		phase = isl_union_set_list_add(phase, isl_union_set_copy(free_set));
+		/*printf("*********phase%d************\n", i);
+		isl_union_set_dump(free_set);*/
+
+		//9. substract free elements from source of inter-tile dependences
+		tile_dep_source = isl_union_set_subtract(
+			tile_dep_source, isl_union_set_copy(free_set));
+		tile_dep_source = isl_union_set_coalesce(tile_dep_source);
+		/*printf("*********inter-tile dependences domain %d************\n", i);
+		isl_union_set_dump(tile_dep_source);*/
+
+		//10. substract free elements from remain points of domain
+		remain = isl_union_set_subtract(remain, free_set);
+		remain = isl_union_set_coalesce(remain);
+		i++;
+
+	}
+
+	//11. add all remaining elements to the last phase
+	phase = isl_union_set_list_add(phase, remain);
+	/*printf("*********phase%d************\n", i);
+	isl_union_set_dump(remain);*/
+
+	//12. insert phases to node
+	node = isl_schedule_node_band_split(node, 1);
+	node = isl_schedule_node_child(node, 0);
+	node = isl_schedule_node_insert_sequence(node, phase);
+	node = isl_schedule_node_parent(node);
+	//isl_schedule_node_dump(node);
+
+	//node = ppcg_set_schedule_node_type(node, isl_ast_loop_atomic);
+
+	isl_union_map_free(point_dep);
+	isl_union_map_free(tile_dep);
+	isl_union_set_free(domain);
+	isl_union_set_free(tile_dep_source);
+
+	return node;
+}
+
 /* Tile "node", if it is a band node with at least 2 members.
  * The tile sizes are set from the "tile_size" option.
  */
@@ -576,6 +715,10 @@ static __isl_give isl_schedule_node *tile_band(
 
 	space = isl_schedule_node_band_get_space(node);
 	sizes = ppcg_multi_val_from_int(space, scop->options->tile_size);
+
+	int try_split=1;
+	if(try_split)
+		return try_split_tile(node, sizes, scop);
 
 	return tile(node, sizes);
 }
