@@ -824,6 +824,7 @@ static __isl_give isl_schedule_node *try_split_tile(
 			isl_union_set_copy(remain), point_dep_sink);
 		free_set = isl_union_set_coalesce(free_set);
 		isl_union_set *phase_set = isl_union_set_intersect(isl_union_set_copy(free_set), isl_union_set_copy(domain));
+		phase_set = isl_union_set_coalesce(phase_set);
 		phases = isl_union_set_list_add(phases, phase_set);
 		printf("*********phases%d************\n", i);
 		isl_union_set_dump(free_set);
@@ -844,7 +845,7 @@ static __isl_give isl_schedule_node *try_split_tile(
 
 	//11. add all remaining elements to the last phases
 	remain = isl_union_set_intersect(remain, domain);
-	phases = isl_union_set_list_add(phases, remain);
+	phases = isl_union_set_list_add(phases, isl_union_set_coalesce(remain));
 	printf("*********phases%d************\n", i);
 	isl_union_set_dump(remain);
 
