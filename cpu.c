@@ -651,6 +651,45 @@ static void *split_tiling_data_free(struct split_tiling_data *data)
 	return NULL;
 }
 
+static isl_stat compute_intra_tile_transitive_closure(__isl_take isl_point *pnt, void *user)
+{
+	struct split_tiling_data *data = user;
+	isl_union_set *points;
+	isl_union_map *intra_tile_dep;
+
+	points = isl_union_set_from_point(pnt);
+	//printf("*********in tile:************\n");
+	//isl_union_set_dump(points);
+	points = isl_union_set_apply(points, isl_union_map_copy(data->tile2point));
+	//printf("*********we have points:************\n");
+	//isl_union_set_dump(points);
+	intra_tile_dep = isl_union_map_copy(data->universe_dep_flow);
+	intra_tile_dep = isl_union_map_intersect_domain(intra_tile_dep, isl_union_set_copy(points));
+	intra_tile_dep = isl_union_map_intersect_range(intra_tile_dep, points);
+	intra_tile_dep = isl_union_map_coalesce(intra_tile_dep);
+	//printf("*********the flow dep is:************\n");
+	//isl_union_map_dump(intra_tile_dep);
+	int exact = 0;
+	intra_tile_dep = isl_union_map_transitive_closure(intra_tile_dep, &exact);
+	//printf("%d\n", exact);
+	if(!exact)
+		return isl_stat_error;
+	if(!data->transitive_closure)
+		data->transitive_closure = intra_tile_dep;
+	else{
+		data->transitive_closure = isl_union_map_union(data->transitive_closure, intra_tile_dep);
+		data->transitive_closure = isl_union_map_coalesce(data->transitive_closure);
+	}
+	//printf("*********current trans:************\n");
+	//isl_union_map_dump(data->transitive_closure);
+
+	if(!data->transitive_closure){
+		return isl_stat_error;
+	}
+
+	return isl_stat_ok;
+}
+
 struct split_tiling_data *padding_tiles(__isl_take isl_schedule_node *node,
 	struct ppcg_scop *scop)
 {
@@ -745,53 +784,16 @@ struct split_tiling_data *padding_tiles(__isl_take isl_schedule_node *node,
 	data->points = isl_union_set_coalesce(data->points);
 	printf("*********all points************\n");
 	isl_union_set_dump(data->points);
+
+	isl_union_set_foreach_point(data->tiles, &compute_intra_tile_transitive_closure, data);
 	
 	if (!data->points || !data->tiles || !data->point2tile ||
 		!data->tile2point || !data->point_dep_flow || 
-		!data->tile_dep_flow || !data->universe_dep_flow)
+		!data->tile_dep_flow || !data->universe_dep_flow ||
+		!data->transitive_closure)
 		return split_tiling_data_free(data);
 
 	return data;
-}
-
-static isl_stat compute_intra_tile_transitive_closure(__isl_take isl_point *pnt, void *user)
-{
-	struct split_tiling_data *data = user;
-	isl_union_set *points;
-	isl_union_map *intra_tile_dep;
-
-	points = isl_union_set_from_point(pnt);
-	//printf("*********in tile:************\n");
-	//isl_union_set_dump(points);
-	points = isl_union_set_apply(points, isl_union_map_copy(data->tile2point));
-	//printf("*********we have points:************\n");
-	//isl_union_set_dump(points);
-	intra_tile_dep = isl_union_map_copy(data->universe_dep_flow);
-	intra_tile_dep = isl_union_map_intersect_domain(intra_tile_dep, isl_union_set_copy(points));
-	intra_tile_dep = isl_union_map_intersect_range(intra_tile_dep, points);
-	intra_tile_dep = isl_union_map_coalesce(intra_tile_dep);
-	//printf("*********the flow dep is:************\n");
-	//isl_union_map_dump(intra_tile_dep);
-	int exact = 0;
-	intra_tile_dep = isl_union_map_transitive_closure(intra_tile_dep, &exact);
-	//printf("%d\n", exact);
-	if(!exact)
-		return isl_stat_error;
-	if(!data->transitive_closure)
-		data->transitive_closure = intra_tile_dep;
-	else{
-		data->transitive_closure = isl_union_map_union(data->transitive_closure, intra_tile_dep);
-		data->transitive_closure = isl_union_map_coalesce(data->transitive_closure);
-	}
-	//printf("*********current trans:************\n");
-	//isl_union_map_dump(data->transitive_closure);
-
-	if(!data->transitive_closure){
-		split_tiling_data_free(data);
-		return isl_stat_error;
-	}
-
-	return isl_stat_ok;
 }
 
 /* Tile the band node "node" with tile sizes "sizes" and
@@ -822,14 +824,14 @@ static __isl_give isl_schedule_node *try_split_tile(
 	remain = isl_union_set_copy(data->points);
 
 	//2. compute transitive closure of intra-tile dependences
-	if(isl_union_set_foreach_point(data->tiles,
-		&compute_intra_tile_transitive_closure, data)==isl_stat_error)
-		return node;
 	point_dep = isl_union_map_copy(data->transitive_closure);
+	printf("*********point dep************\n");
+	isl_union_map_dump(point_dep);
 
 	//3. compute inter-tile flow dependences
 	tile_dep = isl_union_map_copy(data->tile_dep_flow);
 	tile_dep = isl_union_map_intersect_domain(tile_dep, isl_union_set_copy(data->points));
+	tile_dep = isl_union_map_intersect_range(tile_dep, isl_union_set_copy(data->points));
 	tile_dep = isl_union_map_coalesce(tile_dep);
 	printf("*********tile dep************\n");
 	isl_union_map_dump(tile_dep);
