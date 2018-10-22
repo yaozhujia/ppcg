@@ -691,7 +691,8 @@ static isl_stat compute_intra_tile_transitive_closure(__isl_take isl_point *pnt,
 }
 
 struct split_tiling_data *padding_tiles(__isl_take isl_schedule_node *node,
-	struct ppcg_scop *scop)
+	struct ppcg_scop *scop,
+	int minimize_sync)
 {
 	isl_ctx *ctx;
 	isl_union_map *may_source, *schedule_map;
@@ -737,8 +738,10 @@ struct split_tiling_data *padding_tiles(__isl_take isl_schedule_node *node,
 	isl_union_map_dump(data->universe_dep_flow);
 
 	data->tile_dep_flow = compute_temporal_flow_dep(node, scop, 0, 0);
-	isl_union_map *inter_tile_temporal_dep_flow = compute_temporal_flow_dep(node, scop, 1, 0);
-	data->tile_dep_flow = isl_union_map_subtract(data->tile_dep_flow, isl_union_map_copy(inter_tile_temporal_dep_flow));
+	if(!minimize_sync){
+		isl_union_map *inter_tile_temporal_dep_flow = compute_temporal_flow_dep(node, scop, 1, 0);
+		data->tile_dep_flow = isl_union_map_subtract(data->tile_dep_flow, inter_tile_temporal_dep_flow);
+	}
 	data->tile_dep_flow= isl_union_map_gist_domain(data->tile_dep_flow, 
 		isl_union_set_copy(partial_domain));
 	data->tile_dep_flow = isl_union_map_coalesce(data->tile_dep_flow);
@@ -746,7 +749,7 @@ struct split_tiling_data *padding_tiles(__isl_take isl_schedule_node *node,
 	isl_union_map_dump(data->tile_dep_flow);
 
 	data->point_dep_flow = compute_temporal_flow_dep(node, scop, 0, 1);
-	data->point_dep_flow = isl_union_map_subtract(data->point_dep_flow, inter_tile_temporal_dep_flow);
+	//data->point_dep_flow = isl_union_map_subtract(data->point_dep_flow, inter_tile_temporal_dep_flow);
 	data->point_dep_flow = isl_union_map_gist_domain(data->point_dep_flow, isl_union_set_copy(partial_domain));
 	data->point_dep_flow = isl_union_map_gist_range(data->point_dep_flow, partial_domain);
 	data->point_dep_flow = isl_union_map_coalesce(data->point_dep_flow);
@@ -785,12 +788,12 @@ struct split_tiling_data *padding_tiles(__isl_take isl_schedule_node *node,
 	printf("*********all points************\n");
 	isl_union_set_dump(data->points);
 
-	isl_union_set_foreach_point(data->tiles, &compute_intra_tile_transitive_closure, data);
+	if(!minimize_sync)
+		isl_union_set_foreach_point(data->tiles, &compute_intra_tile_transitive_closure, data);
 	
 	if (!data->points || !data->tiles || !data->point2tile ||
 		!data->tile2point || !data->point_dep_flow || 
-		!data->tile_dep_flow || !data->universe_dep_flow ||
-		!data->transitive_closure)
+		!data->tile_dep_flow || !data->universe_dep_flow)
 		return split_tiling_data_free(data);
 
 	return data;
@@ -802,31 +805,43 @@ struct split_tiling_data *padding_tiles(__isl_take isl_schedule_node *node,
 static __isl_give isl_schedule_node *try_split_tile(
 	__isl_take isl_schedule_node *node,
 	__isl_take isl_multi_val *sizes,
-	struct ppcg_scop *scop)
+	struct ppcg_scop *scop,
+	int minimize_sync)
 {
 	isl_union_map *point_dep, *tile_dep;
 	isl_union_set *domain, *remain, *tile_dep_source;
-	isl_union_set_list *phases;
+	isl_union_set_list *all_phases, *phases;
 	struct split_tiling_data *data;
 	int i=0;
 
 	domain = isl_schedule_node_get_domain(node);
 
 	isl_ctx *ctx = isl_schedule_node_get_ctx(node);
-	phases = isl_union_set_list_alloc(ctx, 0);
+	all_phases = isl_union_set_list_alloc(ctx, 0);
 
 	//1. apply parallelogram tiling
 	node = isl_schedule_node_band_tile(node, sizes);
 
 	//padding tiles
-	data = padding_tiles(node, scop);
+	data = padding_tiles(node, scop, minimize_sync);
 
 	remain = isl_union_set_copy(data->points);
 
 	//2. compute transitive closure of intra-tile dependences
-	point_dep = isl_union_map_copy(data->transitive_closure);
-	printf("*********point dep************\n");
-	isl_union_map_dump(point_dep);
+	if(minimize_sync){
+		point_dep = isl_union_map_copy(data->universe_dep_flow);
+		point_dep = isl_union_map_intersect_domain(point_dep, isl_union_set_copy(data->points));
+		point_dep = isl_union_map_intersect_range(point_dep, isl_union_set_copy(data->points));
+		int exact = 0;
+		point_dep = isl_union_map_transitive_closure(point_dep, &exact);
+		printf("*********point dep************\n");
+		isl_union_map_dump(point_dep);
+	}
+	else{
+		point_dep = isl_union_map_copy(data->transitive_closure);
+		printf("*********point dep************\n");
+		isl_union_map_dump(point_dep);
+	}
 
 	//3. compute inter-tile flow dependences
 	tile_dep = isl_union_map_copy(data->tile_dep_flow);
@@ -878,8 +893,8 @@ static __isl_give isl_schedule_node *try_split_tile(
 		free_set = isl_union_set_coalesce(free_set);
 		isl_union_set *phase_set = isl_union_set_intersect(isl_union_set_copy(free_set), isl_union_set_copy(domain));
 		phase_set = isl_union_set_coalesce(phase_set);
-		phases = isl_union_set_list_add(phases, phase_set);
-		printf("*********phases%d************\n", i);
+		all_phases = isl_union_set_list_add(all_phases, phase_set);
+		printf("*********all_phases%d************\n", i);
 		isl_union_set_dump(phase_set);
 		i++;
 
@@ -898,9 +913,31 @@ static __isl_give isl_schedule_node *try_split_tile(
 
 	//11. add all remaining elements to the last phases
 	remain = isl_union_set_intersect(remain, domain);
-	phases = isl_union_set_list_add(phases, isl_union_set_coalesce(remain));
-	printf("*********phases%d************\n", i);
+	all_phases = isl_union_set_list_add(all_phases, isl_union_set_coalesce(remain));
+	printf("*********all_phases%d************\n", i);
 	isl_union_set_dump(remain);
+
+	/*if(minimize_sync){
+		phases = isl_union_set_list_alloc(ctx, 0);
+		int n = isl_union_set_list_n_union_set(all_phases);
+		//TODO: handle cases for period != 3
+		int period = 3;
+		for(int i=0; i<n; i++){
+			isl_union_set *uset = isl_union_set_list_get_union_set(all_phases, i);
+			if(i>0){
+				if(i<n-1 && (i+1)%period==0){
+					isl_union_set_free(uset);
+					continue;
+				}
+				if(i%period==0)
+					uset = isl_union_set_union(uset, isl_union_set_list_get_union_set(all_phases, i-1));
+			}
+			phases = isl_union_set_list_add(phases, isl_union_set_coalesce(uset));
+		}
+		isl_union_set_list_free(all_phases);
+	}
+	else*/
+		phases = all_phases;
 
 	//12. insert phases to node
 	//node = isl_schedule_node_band_split(node, 1);
@@ -943,9 +980,10 @@ static __isl_give isl_schedule_node *tile_band(
 	space = isl_schedule_node_band_get_space(node);
 	sizes = ppcg_multi_val_from_int(space, scop->options->tile_size);
 
-	int try_split=1;
+	int try_split = 1;
+	int minimize_sync = 1;
 	if(try_split)
-		return try_split_tile(node, sizes, scop);
+		return try_split_tile(node, sizes, scop, minimize_sync);
 
 	return tile(node, sizes);
 }
