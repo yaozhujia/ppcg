@@ -52,6 +52,8 @@ ppcg_SOURCES = \
 	hybrid.h \
 	schedule.c \
 	schedule.h \
+	split_tiling.c \
+	split_tiling.h \
 	ppcg_options.c \
 	ppcg_options.h \
 	ppcg.c \
