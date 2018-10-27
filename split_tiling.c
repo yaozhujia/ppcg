@@ -177,14 +177,18 @@ static __isl_give isl_point *split_tile_obtain_sink_point(__isl_take isl_union_m
 static int split_tile_n_dependent_tiles(isl_point *source, isl_point *sink,
 	int size)
 {
-	int n;
+	int n, scale;
+	isl_ctx *ctx;
 	isl_val *val0, *val1;
 
 	val0 = isl_point_get_coordinate_val(source, isl_dim_set, 1);
 	val1 = isl_point_get_coordinate_val(sink, isl_dim_set, 1);
 	n = isl_val_get_num_si(val1) - isl_val_get_num_si(val0);
 
-	n = n / size;
+	ctx = isl_point_get_ctx(source);
+	scale = isl_options_get_tile_scale_tile_loops(ctx);
+
+	n = scale ? (n / size) : n;
 
 	isl_val_free(val0);
 	isl_val_free(val1);
@@ -375,22 +379,28 @@ static void *collect_stmts(__isl_keep isl_union_set *uset,
  * In particular, construct "expr" of "data".
  */
 static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa, 
-	struct split_tile_phases_data *data)
+	struct split_tile_phases_data *data, struct ppcg_scop *scop)
 {
 	//n: the number of union_pw_aff. In other words, the number of band dimensions
 	//m: the number of pw_aff. In ohter words, the number of statements.
-	int n, m;
-	char *lhs;
+	int n, m, shift;
+	char *lhs, *expr;
+	isl_ctx *ctx;
 	isl_map *map;
-	isl_set_list *list;
 	isl_multi_union_pw_aff *copy;
 
 	copy = isl_multi_union_pw_aff_copy(mupa);
-	list = isl_set_list_copy(data->list);
 
 	data->expr = (char **) malloc(data->n_stmt * sizeof(char *));
+	for (int i=0; i<data->n_stmt; i++)
+		data->expr[i] = (char *) malloc(256 * sizeof(char));
+	lhs = (char *) malloc(256*sizeof(char));
+	expr = (char *) malloc(256*sizeof(char));
 	
 	n = isl_multi_union_pw_aff_dim(copy, isl_dim_set);
+
+	ctx = isl_multi_union_pw_aff_get_ctx(mupa);
+	shift = isl_options_get_tile_shift_point_loops(ctx);
 
 	//We only split time dimension and 1st space dimension
 	if(n > 2)
@@ -407,19 +417,37 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 			isl_pw_aff *pa = isl_pw_aff_list_get_pw_aff(list, j);
 			printf("####################pa####################\n");
 			isl_pw_aff_dump(pa);
+
 			lhs = drop_braces(isl_pw_aff_to_str(pa));
 			isl_set *set = isl_pw_aff_domain(pa);
 			char *str = drop_braces(isl_set_to_str(set));
 			lhs = drop_str(lhs, str);
+			
 			char *to = "->";
 			lhs = drop_str(lhs, to);
 			lhs = drop_brackets(lhs);
+			strcpy(expr, lhs);
+
+			/*if(!shift){
+				lhs = strcat(lhs, "-");
+				sprintf(lhs, "%s%d", lhs, scop->options->tile_size);
+				lhs = strcat(lhs, "*floor");
+
+				expr = strcat(expr, "/");
+				sprintf(expr, "%s%d", expr, scop->options->tile_size);
+				expr = add_parentheses(expr);
+
+				lhs = strcat(lhs, expr);
+				lhs = add_parentheses(lhs);
+			}*/
+
 			if(i){
 				//TODO: coefficient != 1
 				lhs = strcat(lhs, "-");
 				lhs = strcat(lhs, data->expr[j]);
 			}
-			data->expr[j] = lhs;
+			
+			strcpy(data->expr[j], lhs);
 			printf("############lhs=%s###################\n", data->expr[j]);
 			isl_set_free(set);
 		}
@@ -427,7 +455,6 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 		isl_pw_aff_list_free(list);
 	}
 
-	isl_set_list_free(list);
 	isl_multi_union_pw_aff_free(copy);
 
 	return NULL;
@@ -628,7 +655,7 @@ static void *split_tile_construct_phases(isl_union_set_list *phases,
 
 	collect_stmts(uset, data);
 
-	construct_expr(mupa, data);
+	construct_expr(mupa, data, scop);
 
 	construct_bound(scop, slope, data);
 
