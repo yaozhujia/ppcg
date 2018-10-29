@@ -110,23 +110,56 @@ static int obtain_time_dim_size(__isl_keep isl_union_set *domain)
  * iteration domain.
  */
 static __isl_give isl_union_map *split_tile_compute_dependence(__isl_keep isl_schedule_node *node,
-	struct ppcg_scop *scop, int bound)
+	__isl_keep isl_point *tile_point, struct ppcg_scop *scop, int bound)
 {
-	int size;
+	int n, m, exact, is_full_tile;
 	isl_ctx *ctx;
 	isl_val *power;
-	isl_union_set *domain;
-	isl_union_map *dependence;
+	isl_union_set *domain, *tile, *points, *range;
+	isl_union_map *schedule, *dependence;
+	isl_basic_set *bset;
+	isl_basic_set_list *list;
 
-	ctx = isl_schedule_node_get_ctx(node);
 	domain = isl_schedule_node_get_domain(node);
-	size = scop->options->tile_size < bound ? scop->options->tile_size : bound;
-	power = isl_val_int_from_si(ctx, size-1);
+	schedule = isl_schedule_node_band_get_partial_schedule_union_map(node);
+	schedule = isl_union_map_reverse(schedule);
+
+	tile = isl_union_set_from_point(isl_point_copy(tile_point));
+	points = isl_union_set_apply(tile, schedule);
+
+	is_full_tile = scop->options->tile_size < bound ? 1 : 0;
+
+	if(!is_full_tile)
+		points = isl_union_set_intersect(points, isl_union_set_copy(domain));
+
+	list = isl_union_set_get_basic_set_list(points);
+	n = isl_basic_set_list_n_basic_set(list);
+	for (int i=0; i<n; i++){
+		bset = isl_basic_set_list_get_basic_set(list, i);
+		m = isl_basic_set_n_dim(bset);
+		bset = isl_basic_set_drop_constraints_involving_dims(bset, isl_dim_set, 1, m-1);
+		if(i==0)
+			range = isl_union_set_from_basic_set(bset);
+		else{
+			isl_union_set *uset = isl_union_set_from_basic_set(bset);
+			range = isl_union_set_union(range, uset);
+		}
+	}
 
 	dependence = isl_union_map_copy(scop->dep_flow);
-	dependence = isl_union_map_fixed_power_val(dependence, power);
 	dependence = isl_union_map_gist_domain(dependence, isl_union_set_copy(domain));
 	dependence = isl_union_map_gist_range(dependence, domain);
+	dependence = isl_union_map_intersect_domain(dependence, isl_union_set_copy(range));
+	dependence = isl_union_map_intersect_range(dependence, range);
+	
+	exact = 0;
+	dependence = isl_union_map_transitive_closure(dependence, &exact);
+	//TODO: handle inexact case
+	if(!exact)
+		printf("inexact!\n");
+
+	isl_union_set_free(points);
+	isl_basic_set_list_free(list);
 
 	return dependence;
 }
@@ -383,8 +416,8 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 {
 	//n: the number of union_pw_aff. In other words, the number of band dimensions
 	//m: the number of pw_aff. In ohter words, the number of statements.
-	int n, m, shift;
-	char *lhs, *expr;
+	int n, m;
+	char *lhs;
 	isl_ctx *ctx;
 	isl_map *map;
 	isl_multi_union_pw_aff *copy;
@@ -395,16 +428,10 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 	for (int i=0; i<data->n_stmt; i++)
 		data->expr[i] = (char *) malloc(256 * sizeof(char));
 	lhs = (char *) malloc(256*sizeof(char));
-	expr = (char *) malloc(256*sizeof(char));
 	
 	n = isl_multi_union_pw_aff_dim(copy, isl_dim_set);
 
 	ctx = isl_multi_union_pw_aff_get_ctx(mupa);
-	shift = isl_options_get_tile_shift_point_loops(ctx);
-
-	//We only split time dimension and 1st space dimension
-	if(n > 2)
-		n = 2;
 	
 	for (int i=0; i<n; i++){
 		isl_union_pw_aff *upa = isl_multi_union_pw_aff_get_union_pw_aff(copy, i);
@@ -426,20 +453,6 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 			char *to = "->";
 			lhs = drop_str(lhs, to);
 			lhs = drop_brackets(lhs);
-			strcpy(expr, lhs);
-
-			/*if(!shift){
-				lhs = strcat(lhs, "-");
-				sprintf(lhs, "%s%d", lhs, scop->options->tile_size);
-				lhs = strcat(lhs, "*floor");
-
-				expr = strcat(expr, "/");
-				sprintf(expr, "%s%d", expr, scop->options->tile_size);
-				expr = add_parentheses(expr);
-
-				lhs = strcat(lhs, expr);
-				lhs = add_parentheses(lhs);
-			}*/
 
 			if(i){
 				//TODO: coefficient != 1
@@ -617,16 +630,16 @@ __isl_give isl_union_set *construct_phase(struct split_tile_phases_data *data,
  * constraints with statement names.
  */
 static void *split_tile_construct_phases(isl_union_set_list *phases,
-	isl_schedule_node *node, 
-	struct ppcg_scop *scop,
-	isl_val *slope, 
-	int n_list)
+	isl_schedule_node *node,  struct ppcg_scop *scop,
+	isl_val *slope, int n_list, int splitted)
 {
-	int n, m;
+	int n, m, scale, shift;
 	isl_ctx *ctx;
+	isl_val *val;
 	isl_union_set *uset, *phase;
 	isl_schedule_node *copy;
-	isl_multi_union_pw_aff *mupa;
+	isl_multi_union_pw_aff *tile_mupa, *mupa;
+	isl_union_pw_multi_aff *upma;
 	struct split_tile_phases_data *data;
 
 	if(!phases || !node)
@@ -642,12 +655,30 @@ static void *split_tile_construct_phases(isl_union_set_list *phases,
 	if(!data)
 		return NULL;
 
+	scale = isl_options_get_tile_scale_tile_loops(ctx);
+	shift = isl_options_get_tile_shift_point_loops(ctx);
+	
 	copy = isl_schedule_node_copy(node);
 	uset = isl_schedule_node_get_domain(copy);
 	uset = isl_union_set_universe(uset);
 
+	if(!shift){
+		tile_mupa = isl_schedule_node_band_get_partial_schedule(copy);
+		if(!scale){
+			val = isl_val_int_from_si(ctx, scop->options->tile_size);
+			tile_mupa = isl_multi_union_pw_aff_scale_val(tile_mupa, val);
+		}
+	}
+
 	copy = isl_schedule_node_child(copy, 0);
+	if(splitted){
+		copy = isl_schedule_node_child(copy, 0);
+		copy = isl_schedule_node_band_split(copy, 2);
+	}
+
 	mupa = isl_schedule_node_band_get_partial_schedule(copy);
+	if(!shift)
+		mupa = isl_multi_union_pw_aff_sub(mupa, tile_mupa);
 	printf("####################mupa####################\n");
 	isl_multi_union_pw_aff_dump(mupa);
 
@@ -687,7 +718,7 @@ static void *split_tile_construct_phases(isl_union_set_list *phases,
 __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes)
 {
-	int n, n_list, bound;
+	int n, n_list, bound, splitted;
 	isl_ctx *ctx;
 	isl_union_map *dependence;
 	isl_union_set *domain, *point;
@@ -702,7 +733,6 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	//1. apply parallelogram tiling
 	node = isl_schedule_node_band_tile(node, sizes);
 	domain = isl_schedule_node_get_domain(node);
-	n = isl_schedule_node_band_n_member(node);
 	
 	//. obtain the lexmin tile
 	source_tile = split_tile_obtain_source_tile(node);
@@ -722,7 +752,7 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	bound = obtain_time_dim_size(domain);
 	
 	//compute the size-th power
-	dependence = split_tile_compute_dependence(node, scop, bound);
+	dependence = split_tile_compute_dependence(node, source_tile, scop, bound);
 	dependence = isl_union_map_intersect_domain(dependence, point);
 	printf("####################dependence####################\n");
 	isl_union_map_dump(dependence);
@@ -746,10 +776,19 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	printf("####################slope####################\n");
 	isl_val_dump(slope);
 
+	//. split the band for multi-dimensional cases
+	n = isl_schedule_node_band_n_member(node);
+	if(n > 2){
+		node = isl_schedule_node_band_split(node, 2);
+		splitted = 1;
+	}
+	else
+		splitted = 0;
+
 	//construct phases
 	ctx = isl_schedule_node_get_ctx(node);
 	phases = isl_union_set_list_alloc(ctx, 0);
-	phases = split_tile_construct_phases(phases, node, scop, slope, n_list);
+	phases = split_tile_construct_phases(phases, node, scop, slope, n_list, splitted);
 	
 	//insert a sequence node with phases
 	node = isl_schedule_node_band_split(node, 1);
