@@ -579,9 +579,9 @@ static __isl_give isl_schedule_node *tile_band(
 	space = isl_schedule_node_band_get_space(node);
 	sizes = ppcg_multi_val_from_int(space, scop->options->tile_size);
 	
+	//TODO: check stencil_partern before scheduling
 	int stencil_partern = 1;
-	int split_tiling = 1;
-	if(stencil_partern && split_tiling)
+	if(stencil_partern && scop->options->split_tile)
 		return split_tile(node, scop, sizes);
 
 	return tile(node, sizes);
@@ -703,7 +703,7 @@ static __isl_give isl_schedule *get_schedule(struct ppcg_scop *ps,
 	ctx = isl_union_set_get_ctx(ps->domain);
 	schedule = ppcg_get_schedule(ctx, options,
 				    &optionally_compute_schedule, ps);
-	if (ps->options->tile)
+	if (ps->options->tile || ps->options->split_tile)
 		schedule = isl_schedule_map_schedule_node_bottom_up(schedule,
 							&tile_band, ps);
 
