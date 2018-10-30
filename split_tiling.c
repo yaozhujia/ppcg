@@ -20,7 +20,7 @@
 #include "ppcg_options.h"
 #include "split_tiling.h"
 
-/* Obtain the lexicographical minimum tile of the iteration domain of "node".
+/* Obtain the lexicographically minimum tile of the iteration domain of "node".
  * The input node "node" should have applied parallelogram tiling.
  */
 static __isl_give isl_point *split_tile_obtain_source_tile(__isl_keep isl_schedule_node *node)
@@ -42,10 +42,10 @@ static __isl_give isl_point *split_tile_obtain_source_tile(__isl_keep isl_schedu
 	return result;
 }
 
-/* Obtain the lexicographical minimum point of those covered by
+/* Obtain the lexicographically minimum point of those covered by
  * all parallelogram tiles. Such points should be a superset of
  * the original iteration domain. The result should be a point
- * that may be lexicographical smaller than the minimum point
+ * that may be lexicographically smaller than the minimum point
  * of the original iteration domain.
  */
 static __isl_give isl_union_set *split_tile_obtain_source_point(__isl_keep isl_schedule_node *node)
@@ -103,9 +103,13 @@ static int obtain_time_dim_size(__isl_keep isl_union_set *domain)
 	return bound;
 }
 
-/* Compute the fixed power of flow dependence. The fixed number should
- * be the smaller one between parallelogram tiling size and time dimension
- * size. The result should be gist for both domain and range because
+/* Compute the transitive closure of flow dependence. The time dimension of
+ * such space for the transitive closure should be the smaller one between 
+ * parallelogram tiling size and time dimension size.
+ * 
+ * In other words, we need to first determine whether the parallelogram
+ * tiling only produces partial tiles or include both full and partial tiles.
+ * The result should be gist for both domain and range because
  * partial tiles may cover points that are not included by the original
  * iteration domain.
  */
@@ -164,7 +168,7 @@ static __isl_give isl_union_map *split_tile_compute_dependence(__isl_keep isl_sc
 	return dependence;
 }
 
-/* Obtain the lexicographical maximum tile of the input "dependence".
+/* Obtain the lexicographically maximum tile of the input "dependence".
  */
 static __isl_give isl_point *split_tile_obtain_sink_tile(__isl_keep isl_schedule_node *node,
 	__isl_keep isl_union_map *dependence)
@@ -186,7 +190,7 @@ static __isl_give isl_point *split_tile_obtain_sink_tile(__isl_keep isl_schedule
 	return result;
 }
 
-/* Obtain the lexicographical maximum point of the input "dependence".
+/* Obtain the lexicographically maximum point of the input "dependence".
  * The input node "node" should have applied parallelogram tiling.
  */
 static __isl_give isl_point *split_tile_obtain_sink_point(__isl_take isl_union_map *dependence)
@@ -393,7 +397,7 @@ static void *collect_stmts(__isl_keep isl_union_set *uset,
 	data->list = list;
 	data->n_stmt = n;
 
-	data->stmt = (char **) malloc(data->n_stmt * sizeof(char *));
+	data->stmt = (char **) calloc(data->n_stmt, sizeof(char *));
 
 	for (int i=0; i<n; i++){
 		isl_set *set;
@@ -417,17 +421,17 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 	//n: the number of union_pw_aff. In other words, the number of band dimensions
 	//m: the number of pw_aff. In ohter words, the number of statements.
 	int n, m;
-	char *lhs;
+	char *expr;
 	isl_ctx *ctx;
 	isl_map *map;
 	isl_multi_union_pw_aff *copy;
 
 	copy = isl_multi_union_pw_aff_copy(mupa);
 
-	data->expr = (char **) malloc(data->n_stmt * sizeof(char *));
+	data->expr = (char **) calloc(data->n_stmt, sizeof(char *));
 	for (int i=0; i<data->n_stmt; i++)
-		data->expr[i] = (char *) malloc(256 * sizeof(char));
-	lhs = (char *) malloc(256*sizeof(char));
+		data->expr[i] = (char *) calloc(256, sizeof(char));
+	expr = (char *) calloc(256, sizeof(char));
 	
 	n = isl_multi_union_pw_aff_dim(copy, isl_dim_set);
 
@@ -445,23 +449,23 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 			printf("####################pa####################\n");
 			isl_pw_aff_dump(pa);
 
-			lhs = drop_braces(isl_pw_aff_to_str(pa));
+			expr = drop_braces(isl_pw_aff_to_str(pa));
 			isl_set *set = isl_pw_aff_domain(pa);
 			char *str = drop_braces(isl_set_to_str(set));
-			lhs = drop_str(lhs, str);
+			expr = drop_str(expr, str);
 			
 			char *to = "->";
-			lhs = drop_str(lhs, to);
-			lhs = drop_brackets(lhs);
+			expr = drop_str(expr, to);
+			expr = drop_brackets(expr);
 
 			if(i){
 				//TODO: coefficient != 1
-				lhs = strcat(lhs, "-");
-				lhs = strcat(lhs, data->expr[j]);
+				expr = strcat(expr, "-");
+				expr = strcat(expr, data->expr[j]);
 			}
 			
-			strcpy(data->expr[j], lhs);
-			printf("############lhs=%s###################\n", data->expr[j]);
+			strcpy(data->expr[j], expr);
+			printf("############expr=%s###################\n", data->expr[j]);
 			isl_set_free(set);
 		}
 		isl_union_pw_aff_free(upa);
@@ -481,13 +485,13 @@ static void *construct_bound(struct ppcg_scop *scop,
 	struct split_tile_phases_data *data)
 {
 	int n, dim;
-	char *rhs, *expr;
+	char *bound, *expr;
 	isl_set *set;
 	isl_set_list *list;
 
-	data->bound = (char *) malloc(256*sizeof(char));
-	rhs = (char *) malloc(256*sizeof(char));
-	expr = (char *) malloc(256*sizeof(char));
+	data->bound = (char *) calloc(256, sizeof(char));
+	bound = (char *) calloc(256, sizeof(char));
+	expr = (char *) calloc(256, sizeof(char));
 
 	list = isl_set_list_copy(data->list);
 	n = isl_set_list_n_set(list);
@@ -499,30 +503,30 @@ static void *construct_bound(struct ppcg_scop *scop,
 			break;
 	}
 
-	strcpy(rhs, isl_set_get_dim_name(set, isl_dim_set, 1));
-	rhs = strcat(rhs, "-");
+	strcpy(bound, isl_set_get_dim_name(set, isl_dim_set, 1));
+	bound = strcat(bound, "-");
 	if(isl_val_get_num_si(slope) > 1){
-		sprintf(rhs, "%s%ld", rhs, isl_val_get_num_si(slope));
-		rhs = strcat(rhs, "*");
+		sprintf(bound, "%s%ld", bound, isl_val_get_num_si(slope));
+		bound = strcat(bound, "*");
 	}
-	rhs = strcat(rhs, isl_set_get_dim_name(set, isl_dim_set, 0));
-	rhs = add_parentheses(rhs);
+	bound = strcat(bound, isl_set_get_dim_name(set, isl_dim_set, 0));
+	bound = add_parentheses(bound);
 
-	strcpy(data->bound, rhs);
-	strcpy(expr, rhs);
+	strcpy(data->bound, bound);
+	strcpy(expr, bound);
 
-	rhs = strcat(rhs, "-");
-	sprintf(rhs, "%s%d", rhs, scop->options->tile_size);
-	rhs = strcat(rhs, "*floor");
+	bound = strcat(bound, "-");
+	sprintf(bound, "%s%d", bound, scop->options->tile_size);
+	bound = strcat(bound, "*floor");
 
 	expr = strcat(expr, "/");
 	sprintf(expr, "%s%d", expr, scop->options->tile_size);
 	expr = add_parentheses(expr);
 
-	data->bound = strcat(rhs, expr);
+	data->bound = strcat(bound, expr);
 	data->bound = add_parentheses(data->bound);
 
-	printf("############rhs=%s###################\n", data->bound);
+	printf("############bound=%s###################\n", data->bound);
 
 	isl_set_free(set);
 	isl_set_list_free(list);
@@ -533,7 +537,7 @@ static void *construct_bound(struct ppcg_scop *scop,
 /* Construct the expression of each phase for split tiling.
  * The constraints of each phase should be expressed in the form of
  * 
- * 		lb <= expr <= ub
+ * 		lb <= expr < ub
  * 
  * "expr" is the union of each element of "data->expr". In case of multiple
  * statements, "expr" should be united by ";". "lb" and "ub" are the lower
@@ -558,13 +562,13 @@ __isl_give isl_union_set *construct_phase(struct split_tile_phases_data *data,
 
 	n = data->n_stmt;
 
-	phase_string = (char *) malloc(data->n_stmt * 256 * sizeof(char));
-	lb = (char *) malloc(data->n_stmt * 256 * sizeof(char));
-	ub = (char *) malloc(data->n_stmt * 256 * sizeof(char));
+	phase_string = (char *) calloc(data->n_stmt * 256, sizeof(char));
+	lb = (char *) calloc(data->n_stmt * 256, sizeof(char));
+	ub = (char *) calloc(data->n_stmt * 256, sizeof(char));
 
-	constraints = (char **) malloc(data->n_stmt * sizeof(char *));
+	constraints = (char **) calloc(data->n_stmt, sizeof(char *));
 	for (int i=0; i<n; i++)
-		constraints[i] = (char *) malloc(256 * sizeof(char));
+		constraints[i] = (char *) calloc(256, sizeof(char));
 
 	if(order < data->n_phase - 1){
 		strcpy(lb, data->bound);
@@ -622,7 +626,7 @@ __isl_give isl_union_set *construct_phase(struct split_tile_phases_data *data,
 /* Construct the phases for split tiling. The internal data
  * structure is first constructed, which in turn is represented
  * by its members. "data->stmt" is constructed by dropping the
- * constratins of the domain of "node"; "data->expr" is driven by
+ * constraints of the domain of "node"; "data->expr" is driven by
  * the multi_union_pw_aff of "node"; "data->bound" is built on top
  * of "slope". 
  * 
@@ -708,12 +712,12 @@ static void *split_tile_construct_phases(isl_union_set_list *phases,
 	return phases;
 }
 
-/* Split tiling. We first apply prallelogram tiling on the band node,
+/* Split tiling. We first apply parallelogram tiling on the band node,
  * followed by constructing the fixed power of flow dependence, slope of
  * dependence across tiles along the same time tile band, and introduced
  * independent phases that can be executed in parallel. 
  * 
- * The phases are inserted undernearth the time tile dimension.
+ * The phases are inserted underneath the time tile dimension.
  */
 __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes)
@@ -741,7 +745,7 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	
 	//obtain the lexmin point of the lexmin tile
 	point = split_tile_obtain_source_point(node);
-	printf("####################spoint####################\n");
+	printf("####################point####################\n");
 	isl_union_set_dump(point);
 
 	source_point = isl_union_set_sample_point(isl_union_set_copy(point));

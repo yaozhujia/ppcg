@@ -25,7 +25,7 @@
  * 
  * "S" is the multi_union_pw_aff expression of the time dimension, "T" is the
  * multi_union_pw_aff expression of the first dimension of space. "c" is the
- * coefficient of the variable of time dimenion after scheduling, and it can
+ * coefficient of the variable of time dimension after scheduling, and it can
  * be obtained from the scheduling result of the isl scheduler.
  * 
  *  "bound" is the bounding face introduced by split tiling. In particular,
@@ -37,9 +37,8 @@
  * the variable of the first dimension of space. It should be determined by
  * computing the slope of maximum dependence distance. "size" represents
  * the parallelogram tiling size along the first dimension of space. It should
- * be excluded from the expression with "--no-isl-tile-scale-tile-loops" option.
- * "size * floor(f(t, s0)/4)" determines the starting points of each tile, and
- * it should not appear when "--no-isl-tile-shift-point-loops" is set.
+ * be the same when "--no-isl-tile-scale-tile-loops" and/or option.
+ * "--no-isl-tile-shift-point-loops" is set are set.
  * 
  */
 struct split_tile_phases_data{
