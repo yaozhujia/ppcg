@@ -40,6 +40,8 @@
  * be the same when "--no-isl-tile-scale-tile-loops" and/or option.
  * "--no-isl-tile-shift-point-loops" is set are set.
  * 
+ * "time_dim_name" represents the name of time dimension. It is used to
+ * construct the bounds.
  */
 struct split_tile_phases_data{
 	isl_set_list *list;
@@ -48,6 +50,7 @@ struct split_tile_phases_data{
 	char **stmt;
 	char **expr;
 	char *bound;
+	char *time_dim_name;
 };
 
 static void *split_tile_phases_data_free(struct split_tile_phases_data *data);
