@@ -437,6 +437,7 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 
 	copy = isl_multi_union_pw_aff_copy(mupa);
 
+	data->no_constraints = (int *) calloc(data->n_stmt, sizeof(int));
 	data->expr = (char **) calloc(data->n_stmt, sizeof(char *));
 	for (int i=0; i<data->n_stmt; i++)
 		data->expr[i] = (char *) calloc(256, sizeof(char));
@@ -444,7 +445,7 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 	
 	n = isl_multi_union_pw_aff_dim(copy, isl_dim_set);
 
-	ctx = isl_multi_union_pw_aff_get_ctx(mupa);
+	ctx = isl_multi_union_pw_aff_get_ctx(copy);
 	
 	for (int i=0; i<n; i++){
 		isl_union_pw_aff *upa = isl_multi_union_pw_aff_get_union_pw_aff(copy, i);
@@ -469,8 +470,12 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 
 			if(i){
 				//TODO: coefficient != 1
-				expr = strcat(expr, "-");
-				expr = strcat(expr, data->expr[j]);
+				if(!strcmp(expr, data->expr[j]))
+					data->no_constraints[j] = 1;
+				else{
+					expr = strcat(expr, "-");
+					expr = strcat(expr, data->expr[j]);
+				}
 			}
 			
 			strcpy(data->expr[j], expr);
@@ -493,60 +498,55 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 	__isl_keep isl_val *slope,
 	struct split_tile_phases_data *data)
 {
-	int n, dim, size;
+	int n, size;
 	char *bound, *expr;
-	isl_val *val;
-	isl_set *set;
-	isl_set_list *list;
 
-	data->bound = (char *) calloc(256, sizeof(char));
+	n = isl_set_list_n_set(data->list);
+
+	data->bound = (char **) calloc(n, sizeof(char *));
+	for (int i=0; i<n; i++)
+		data->bound[i] = (char *) calloc(256, sizeof(char));
 	data->time_dim_name = (char *) calloc(256, sizeof(char));
 	bound = (char *) calloc(256, sizeof(char));
 	expr = (char *) calloc(256, sizeof(char));
 
-	list = isl_set_list_copy(data->list);
-	n = isl_set_list_n_set(list);
-
 	for (int i=0; i<n; i++){
-		set = isl_set_list_get_set(list, i);
-		dim = isl_set_n_dim(set);
-		if(dim >= 2)
-			break;
+
+		isl_set *set = isl_set_list_get_set(data->list, i);
+		isl_val *val = isl_multi_val_get_val(sizes, 1);
+		size = isl_val_get_num_si(val);
+
+		strcpy(bound, isl_set_get_dim_name(set, isl_dim_set, 1));
+		bound = strcat(bound, "-");
+		if(isl_val_get_num_si(slope) != 1){
+			sprintf(bound, "%s%ld", bound, isl_val_get_num_si(slope));
+			bound = strcat(bound, "*");
+		}
+		bound = strcat(bound, isl_set_get_dim_name(set, isl_dim_set, 0));
+		bound = add_parentheses(bound);
+
+		strcpy(data->time_dim_name, isl_set_get_dim_name(set, isl_dim_set, 0));
+
+		//strcpy(data->bound[i], bound);
+		strcpy(expr, bound);
+
+		bound = strcat(bound, "-");
+		sprintf(bound, "%s%d", bound, size);
+		bound = strcat(bound, "*floor");
+
+		expr = strcat(expr, "/");
+		sprintf(expr, "%s%d", expr, size);
+		expr = add_parentheses(expr);
+
+		bound = strcat(bound, expr);
+		bound =  add_parentheses(bound);
+		strncpy(data->bound[i], bound, strlen(bound) + 1);
+
+		printf("############bound[%d]=%s###################\n", i, data->bound[i]);
+		
+		isl_set_free(set);
+		isl_val_free(val);
 	}
-
-	val = isl_multi_val_get_val(sizes, 1);
-	size = isl_val_get_num_si(val);
-
-	strcpy(bound, isl_set_get_dim_name(set, isl_dim_set, 1));
-	bound = strcat(bound, "-");
-	if(isl_val_get_num_si(slope) > 1){
-		sprintf(bound, "%s%ld", bound, isl_val_get_num_si(slope));
-		bound = strcat(bound, "*");
-	}
-	bound = strcat(bound, isl_set_get_dim_name(set, isl_dim_set, 0));
-	bound = add_parentheses(bound);
-
-	strcpy(data->time_dim_name, isl_set_get_dim_name(set, isl_dim_set, 0));
-
-	strcpy(data->bound, bound);
-	strcpy(expr, bound);
-
-	bound = strcat(bound, "-");
-	sprintf(bound, "%s%d", bound, size);
-	bound = strcat(bound, "*floor");
-
-	expr = strcat(expr, "/");
-	sprintf(expr, "%s%d", expr, size);
-	expr = add_parentheses(expr);
-
-	data->bound = strcat(bound, expr);
-	data->bound = add_parentheses(data->bound);
-
-	printf("############bound=%s###################\n", data->bound);
-
-	isl_val_free(val);
-	isl_set_free(set);
-	isl_set_list_free(list);
 	
 	return NULL;
 }
@@ -559,8 +559,9 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
  * "expr" is the union of each element of "data->expr". In case of multiple
  * statements, "expr" should be united by ";". "lb" and "ub" are the lower
  * and upper bounds of "expr", both extraced from "data->bound". There shoule
- * be a shift of "size" between "lb" and "ub" where "size" is the parallelogram
- * tiling size.
+ * be a shift of "order * size - t_name" between "lb" and "ub" where "size"
+ * is the parallelogram tiling size, "order" for the order of phases and
+ * "t_name" for the name of time dimension.
  * 
  * "lb" or "ub" may be absent in some cases but at least one should be present.
  * In particular, "ub" should be absent for the first phase, while "lb" can be
@@ -571,69 +572,70 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 	struct split_tile_phases_data *data, int order)
 {	
 	int n, size;
-	char *phase_string, *lb, *ub, *shift;
-	char **constraints;
+	char *phase_string, *shift;
+	char **lb, **ub, **constraints;
 	isl_ctx *ctx;
 	isl_val *val;
 	isl_union_set *phase;
 
-	n = data->n_stmt;
+	n = isl_set_list_n_set(data->list);
 
-	phase_string = (char *) calloc(data->n_stmt * 256, sizeof(char));
-	lb = (char *) calloc(data->n_stmt * 256, sizeof(char));
-	ub = (char *) calloc(data->n_stmt * 256, sizeof(char));
-	shift = (char *) calloc(data->n_stmt * 256, sizeof(char));
+	phase_string = (char *) calloc( n * 256, sizeof(char));
+	shift = (char *) calloc(256, sizeof(char));
 
-	constraints = (char **) calloc(data->n_stmt, sizeof(char *));
-	for (int i=0; i<n; i++)
+	lb = (char **) calloc(n, sizeof(char *));
+	ub = (char **) calloc(n, sizeof(char *));
+	constraints = (char **) calloc(n, sizeof(char *));
+	for (int i=0; i<n; i++){
 		constraints[i] = (char *) calloc(256, sizeof(char));
+		lb[i] = (char *) calloc(10000000, sizeof(char));
+		ub[i] = (char *) calloc(256, sizeof(char));
+	}
 
 	val = isl_multi_val_get_val(sizes, 1);
 	size = isl_val_get_num_si(val);
 
-	if(order < data->n_phase - 1){
-		strcpy(lb, data->bound);
-		if(order > 0){
-			lb = strcat(lb, "-");
-			sprintf(shift, "%d%s", order * size, "-");
-			strcat(shift, data->time_dim_name);
-			shift = add_parentheses(shift);
-			lb = strcat(lb, shift);
-		}
-	}
-	
-	if(order > 0){
-		strcpy(ub, data->bound);
-		if(order > 1){
-			ub = strcat(ub, "-");
-			sprintf(shift, "%d%s", (order - 1) * size, "-");
-			strcat(shift, data->time_dim_name);
-			shift = add_parentheses(shift);
-			ub = strcat(ub, shift);
-		}
-	}
-	printf("############lb%d=%s###################\n", order, lb);
-	printf("############ub%d=%s###################\n", order, ub);
-
 	for (int i=0; i<n; i++){
+
 		if(i == 0)
 			strcpy(constraints[i], data->stmt[i]);
 		else{
 			phase_string = strcat(phase_string, "; ");
-			constraints[i] = strcat(constraints[i], data->stmt[i]);;
-		}
-		constraints[i] = strcat(constraints[i], " : ");
-
-		if(*lb!='\0'){
-			constraints[i] = strcat(constraints[i], lb);
-			constraints[i] = strcat(constraints[i], "<=");
+			constraints[i] = strcat(constraints[i], data->stmt[i]);
 		}
 
-		constraints[i] = strcat(constraints[i], data->expr[i]);
-		
-		if(*ub!='\0'){
-			constraints[i] = strcat(constraints[i], "<");
-			constraints[i] = strcat(constraints[i], ub);
+		if(!data->no_constraints[i]){
+			constraints[i] = strcat(constraints[i], " : ");
+
+			if(order < data->n_phase - 1){
+				strcpy(lb[i], data->bound[i]);
+				if(order > 0){
+					lb[i] = strcat(lb[i], "-");
+					sprintf(shift, "%d%s", order * size, "-");
+					strcat(shift, data->time_dim_name);
+					shift = add_parentheses(shift);
+					lb[i] = strcat(lb[i], shift);
+				}
+				printf("############lb%d[%d]=%s###################\n", order, i, data->bound[i]);
+				constraints[i] = strcat(constraints[i], lb[i]);
+				constraints[i] = strcat(constraints[i], "<=");
+			}
+
+			constraints[i] = strcat(constraints[i], data->expr[i]);
+			
+			if(order > 0){
+				strcpy(ub[i], data->bound[i]);
+				if(order > 1){
+					ub[i] = strcat(ub[i], "-");
+					sprintf(shift, "%d%s", (order - 1) * size, "-");
+					strcat(shift, data->time_dim_name);
+					shift = add_parentheses(shift);
+					ub[i] = strcat(ub[i], shift);
+				}
+				printf("############ub%d[%d]=%s###################\n", order, i, ub[i]);
+				constraints[i] = strcat(constraints[i], "<");
+				constraints[i] = strcat(constraints[i], ub[i]);
+			}
 		}
 
 		phase_string = strcat(phase_string, constraints[i]);

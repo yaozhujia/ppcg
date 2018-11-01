@@ -14,6 +14,9 @@
  * 
  * "n_phase" is the number of phases that may be introduced by split tiling.
  * 
+ * "no_constraints" is a set of "n_stmt" flags representing whether the
+ * corresponding statement should have constraints in the phases.
+ * 
  * "stmt" is a sequence of "n_stmt" names of statements. In particular, this
  * is used to store the string of names.
  * 
@@ -33,24 +36,30 @@
  * 
  * 		f(t, s0) - size * floor(f(t, s0)/4)
  * 
- * "f" is a linear function of "t", the variable of time dimension, and "s0",
- * the variable of the first dimension of space. It should be determined by
- * computing the slope of maximum dependence distance. "size" represents
- * the parallelogram tiling size along the first dimension of space. It should
- * be the same when "--no-isl-tile-scale-tile-loops" and/or option.
- * "--no-isl-tile-shift-point-loops" is set are set.
+ * "f" is a  is a set of linear function of "t", the variable of time
+ * dimension, and "s0", the variable of the first dimension of space. It
+ * should be determined by computing the slope of maximum dependence
+ * distance. "size" represents the parallelogram tiling size along the first
+ * dimension of space. It should be the same when "--no-isl-tile-scale-tile-loops"
+ * and/or option. "--no-isl-tile-shift-point-loops" is set are set.
  * 
  * "time_dim_name" represents the name of time dimension. It is used to
  * construct the bounds.
  */
 struct split_tile_phases_data{
+
 	isl_set_list *list;
+
 	int n_stmt;
 	int n_phase;
+
+	int *no_constraints;
+	
 	char **stmt;
 	char **expr;
-	char *bound;
+	char **bound;
 	char *time_dim_name;
+
 };
 
 static void *split_tile_phases_data_free(struct split_tile_phases_data *data);
