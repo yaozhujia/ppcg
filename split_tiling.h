@@ -45,6 +45,8 @@
  * 
  * "time_dim_name" represents the name of time dimension. It is used to
  * construct the bounds.
+ * "space_dim_name" represents the name of space dimension. It is used to
+ * construct the bounds.
  */
 struct split_tile_phases_data{
 
@@ -58,7 +60,8 @@ struct split_tile_phases_data{
 	char **stmt;
 	char **expr;
 	char **bound;
-	char *time_dim_name;
+	char **time_dim_name;
+	char **space_dim_name;
 
 };
 

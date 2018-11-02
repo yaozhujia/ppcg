@@ -27,6 +27,7 @@
 static __isl_give isl_point *split_tile_obtain_source_tile(__isl_keep isl_schedule_node *node)
 {
 	isl_point *result;
+	isl_set *params;
 	isl_union_set *domain, *tile;
 	isl_union_map *schedule;
 
@@ -38,6 +39,10 @@ static __isl_give isl_point *split_tile_obtain_source_tile(__isl_keep isl_schedu
 
 	tile = isl_union_set_apply(domain, schedule);
 	tile = isl_union_set_lexmin(tile);
+
+	params = isl_union_set_params(isl_union_set_copy(tile));
+	tile = isl_union_set_gist_params(tile, params);
+
 	result = isl_union_set_sample_point(tile);
 
 	return result;
@@ -51,6 +56,7 @@ static __isl_give isl_point *split_tile_obtain_source_tile(__isl_keep isl_schedu
  */
 static __isl_give isl_union_set *split_tile_obtain_source_point(__isl_keep isl_schedule_node *node)
 {
+	isl_set *params;
 	isl_union_set *domain, *tile, *points;
 	isl_union_map *schedule;
 
@@ -63,10 +69,13 @@ static __isl_give isl_union_set *split_tile_obtain_source_point(__isl_keep isl_s
 	tile = isl_union_set_apply(domain, isl_union_map_copy(schedule));
 	tile = isl_union_set_lexmin(tile);
 	
-	//obtain the lexmax point of the lexmax tile
+	//obtain the lexmin point of the lexmin tile
 	schedule = isl_union_map_reverse(schedule);
 	points = isl_union_set_apply(tile, schedule);
 	points = isl_union_set_lexmin(points);
+
+	params = isl_union_set_params(isl_union_set_copy(points));
+	points = isl_union_set_gist_params(points, params);
 	
 	return points;
 }
@@ -94,14 +103,17 @@ static int obtain_time_dim_size(__isl_keep isl_union_set *domain)
 	min = isl_union_set_sample_point(points);
 	lb = isl_point_get_coordinate_val(min, isl_dim_set, 0);
 
-	bound = isl_val_get_num_si(ub) - isl_val_get_num_si(lb) + 1;
+	bound = isl_val_get_num_si(ub) - isl_val_get_num_si(lb);
 	
 	isl_point_free(max);
 	isl_point_free(min);
 	isl_val_free(ub);
 	isl_val_free(lb);
 
-	return bound;
+	if(!bound)
+		return INT32_MAX;
+
+	return bound + 1;
 }
 
 /* Compute the transitive closure of flow dependence. The time dimension of
@@ -121,6 +133,7 @@ static __isl_give isl_union_map *split_tile_compute_dependence(__isl_keep isl_sc
 	int n, m, exact, size, is_full_tile;
 	isl_ctx *ctx;
 	isl_val *val;
+	isl_set *params;
 	isl_union_set *domain, *tile, *points, *range;
 	isl_union_map *schedule, *dependence;
 	isl_basic_set *bset;
@@ -132,6 +145,11 @@ static __isl_give isl_union_map *split_tile_compute_dependence(__isl_keep isl_sc
 
 	tile = isl_union_set_from_point(isl_point_copy(tile_point));
 	points = isl_union_set_apply(tile, schedule);
+	isl_union_set_dump(points);
+	params = isl_union_set_params(isl_union_set_copy(points));
+	points = isl_union_set_gist_params(points, params);
+	isl_union_set_dump(points);
+	isl_union_set_dump(domain);
 
 	val = isl_multi_val_get_val(sizes, 0);
 	size = isl_val_get_num_si(val);
@@ -139,8 +157,8 @@ static __isl_give isl_union_map *split_tile_compute_dependence(__isl_keep isl_sc
 
 	if(!is_full_tile)
 		points = isl_union_set_intersect(points, isl_union_set_copy(domain));
-
 	list = isl_union_set_get_basic_set_list(points);
+	isl_basic_set_list_dump(list);
 	n = isl_basic_set_list_n_basic_set(list);
 	for (int i=0; i<n; i++){
 		bset = isl_basic_set_list_get_basic_set(list, i);
@@ -153,12 +171,20 @@ static __isl_give isl_union_map *split_tile_compute_dependence(__isl_keep isl_sc
 			range = isl_union_set_union(range, uset);
 		}
 	}
+	params = isl_union_set_params(isl_union_set_copy(range));
+	range = isl_union_set_gist_params(range, params);
+	isl_union_set_dump(range);
 
 	dependence = isl_union_map_copy(scop->dep_flow);
+	isl_union_map_dump(dependence);
+	params = isl_union_map_params(isl_union_map_copy(dependence));
+	dependence = isl_union_map_gist_params(dependence, params);
 	dependence = isl_union_map_gist_domain(dependence, isl_union_set_copy(domain));
 	dependence = isl_union_map_gist_range(dependence, domain);
 	dependence = isl_union_map_intersect_domain(dependence, isl_union_set_copy(range));
+	isl_union_map_dump(dependence);
 	dependence = isl_union_map_intersect_range(dependence, range);
+	isl_union_map_dump(dependence);
 	
 	exact = 0;
 	dependence = isl_union_map_transitive_closure(dependence, &exact);
@@ -330,6 +356,21 @@ static char *drop_brackets(char *name)
 	return name;
 }
 
+/* Drop "->" from "name".
+ */
+static char *drop_parameters_and_to(char *name)
+{
+	int n;
+
+	n = strlen(name);
+
+	for (int i=0; i<n-4; i++)
+		if ( name[i] == '-' && name[i+1] == '>'){
+			printf("%s\n",&name[i+2]);
+        	return &name[i+2];
+		}
+}
+
 /* Insert "sub" to "str" at "loc".
  */
 static char *insert_str(char *s1, char *s2, int f)
@@ -413,6 +454,12 @@ static void *collect_stmts(__isl_keep isl_union_set *uset,
 		
 		set = isl_set_list_get_set(list, i);
 		data->stmt[i] = drop_braces(isl_set_to_str(set));
+		printf("name %d is %s\n", i, data->stmt[i]);
+
+		char *to = "->";
+		if(strstr(data->stmt[i], to))
+			data->stmt[i] = drop_parameters_and_to(data->stmt[i]);
+		
 		printf("name %d is %s\n", i, data->stmt[i]);
 
 		isl_set_free(set);
@@ -504,9 +551,13 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 	n = isl_set_list_n_set(data->list);
 
 	data->bound = (char **) calloc(n, sizeof(char *));
-	for (int i=0; i<n; i++)
+	data->time_dim_name = (char **) calloc(n, sizeof(char *));
+	data->space_dim_name = (char **) calloc(n, sizeof(char *));
+	for (int i=0; i<n; i++){
 		data->bound[i] = (char *) calloc(256, sizeof(char));
-	data->time_dim_name = (char *) calloc(256, sizeof(char));
+		data->time_dim_name[i] = (char *) calloc(256, sizeof(char));
+		data->space_dim_name[i] = (char *) calloc(256, sizeof(char));
+	}
 	bound = (char *) calloc(256, sizeof(char));
 	expr = (char *) calloc(256, sizeof(char));
 
@@ -517,6 +568,7 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 		size = isl_val_get_num_si(val);
 
 		strcpy(bound, isl_set_get_dim_name(set, isl_dim_set, 1));
+		strcpy(data->space_dim_name[i], isl_set_get_dim_name(set, isl_dim_set, 1));
 		bound = strcat(bound, "-");
 		if(isl_val_get_num_si(slope) != 1){
 			sprintf(bound, "%s%ld", bound, isl_val_get_num_si(slope));
@@ -525,9 +577,8 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 		bound = strcat(bound, isl_set_get_dim_name(set, isl_dim_set, 0));
 		bound = add_parentheses(bound);
 
-		strcpy(data->time_dim_name, isl_set_get_dim_name(set, isl_dim_set, 0));
+		strcpy(data->time_dim_name[i], isl_set_get_dim_name(set, isl_dim_set, 0));
 
-		//strcpy(data->bound[i], bound);
 		strcpy(expr, bound);
 
 		bound = strcat(bound, "-");
@@ -571,11 +622,11 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 	struct split_tile_phases_data *data, int order)
 {	
-	int n, size;
+	int n, t_size, s_size;
 	char *phase_string, *shift;
-	char **lb, **ub, **constraints;
+	char **lb, **ub, **constraints, **tail;
 	isl_ctx *ctx;
-	isl_val *val;
+	isl_val *val0, *val1;
 	isl_union_set *phase;
 
 	n = isl_set_list_n_set(data->list);
@@ -583,17 +634,21 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 	phase_string = (char *) calloc( n * 256, sizeof(char));
 	shift = (char *) calloc(256, sizeof(char));
 
+	constraints = (char **) calloc(n, sizeof(char *));
 	lb = (char **) calloc(n, sizeof(char *));
 	ub = (char **) calloc(n, sizeof(char *));
-	constraints = (char **) calloc(n, sizeof(char *));
+	tail = (char **) calloc(n, sizeof(char *));
 	for (int i=0; i<n; i++){
 		constraints[i] = (char *) calloc(256, sizeof(char));
 		lb[i] = (char *) calloc(10000000, sizeof(char));
 		ub[i] = (char *) calloc(256, sizeof(char));
+		tail[i] = (char *) calloc(256, sizeof(char));
 	}
 
-	val = isl_multi_val_get_val(sizes, 1);
-	size = isl_val_get_num_si(val);
+	val0 = isl_multi_val_get_val(sizes, 0);
+	t_size = isl_val_get_num_si(val0);
+	val1 = isl_multi_val_get_val(sizes, 1);
+	s_size = isl_val_get_num_si(val1);
 
 	for (int i=0; i<n; i++){
 
@@ -611,12 +666,31 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 				strcpy(lb[i], data->bound[i]);
 				if(order > 0){
 					lb[i] = strcat(lb[i], "-");
-					sprintf(shift, "%d%s", order * size, "-");
-					strcat(shift, data->time_dim_name);
-					shift = add_parentheses(shift);
+					sprintf(shift, "%d", order * s_size);
 					lb[i] = strcat(lb[i], shift);
+
+					lb[i] = strcat(lb[i], "+");
+
+					strcpy(tail[i], data->time_dim_name[i]);
+					tail[i] = strcat(tail[i], "-");
+					sprintf(tail[i], "%s%d", tail[i], s_size);
+					tail[i] = strcat(tail[i], "*floor");
+
+					char *floor_str = (char *) calloc(256, sizeof(char));
+					strcpy(floor_str, data->time_dim_name[i]);
+					floor_str = add_parentheses(floor_str);
+					floor_str = strcat(floor_str, "/");
+					sprintf(floor_str, "%s%d", floor_str, t_size);
+					floor_str = add_parentheses(floor_str);
+
+					printf("%s\n", floor_str);
+					tail[i] = strcat(tail[i], floor_str);
+					printf("%s\n", tail[i]);
+					lb[i] = strcat(lb[i], tail[i]);
+					printf("%s\n", lb[i]);
+
 				}
-				printf("############lb%d[%d]=%s###################\n", order, i, data->bound[i]);
+				printf("############lb%d[%d]=%s###################\n", order, i, lb[i]);
 				constraints[i] = strcat(constraints[i], lb[i]);
 				constraints[i] = strcat(constraints[i], "<=");
 			}
@@ -627,10 +701,28 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 				strcpy(ub[i], data->bound[i]);
 				if(order > 1){
 					ub[i] = strcat(ub[i], "-");
-					sprintf(shift, "%d%s", (order - 1) * size, "-");
-					strcat(shift, data->time_dim_name);
-					shift = add_parentheses(shift);
+					sprintf(shift, "%d", (order - 1) * s_size);
 					ub[i] = strcat(ub[i], shift);
+
+					ub[i] = strcat(ub[i], "+");
+
+					strcpy(tail[i], data->time_dim_name[i]);
+					tail[i] = strcat(tail[i], "-");
+					sprintf(tail[i], "%s%d", tail[i], s_size);
+					tail[i] = strcat(tail[i], "*floor");
+
+					char *floor_str = (char *) calloc(256, sizeof(char));
+					strcpy(floor_str, data->time_dim_name[i]);
+					floor_str = add_parentheses(floor_str);
+					floor_str = strcat(floor_str, "/");
+					sprintf(floor_str, "%s%d", floor_str, t_size);
+					floor_str = add_parentheses(floor_str);
+
+					printf("%s\n", floor_str);
+					tail[i] = strcat(tail[i], floor_str);
+					printf("%s\n", tail[i]);
+					ub[i] = strcat(ub[i], tail[i]);
+					printf("%s\n", lb[i]);
 				}
 				printf("############ub%d[%d]=%s###################\n", order, i, ub[i]);
 				constraints[i] = strcat(constraints[i], "<");
@@ -647,7 +739,8 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 	phase = isl_union_set_read_from_str(ctx, phase_string);
 	phase = isl_union_set_coalesce(phase);
 
-	isl_val_free(val);
+	isl_val_free(val0);
+	isl_val_free(val1);
 
 	return phase;
 }
@@ -780,7 +873,7 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	printf("####################time bound=%d####################\n", bound);
 
 	//minimize synchronization by enlarging the time tiling 
-	if(scop->options->min_sync){
+	if(scop->options->min_sync && bound != INT32_MAX){
 		v = isl_val_int_from_si(ctx, bound);
 		sizes = isl_multi_val_set_val(sizes, 0, v);
 	}
