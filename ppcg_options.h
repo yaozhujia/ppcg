@@ -36,6 +36,7 @@ struct ppcg_options {
 	/* Perform split tiling. */
 	int split_tile;
 	int min_sync;
+	char *tile_sizes;
 
 	/* Isolate full tiles from partial tiles. */
 	int isolate_full_tiles;

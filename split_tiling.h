@@ -70,4 +70,7 @@ static void *split_tile_phases_data_free(struct split_tile_phases_data *data);
 __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes);
 
+__isl_give isl_multi_val *split_tile_read_tile_sizes(__isl_keep isl_schedule_node *node,
+		struct ppcg_scop *scop, int *tile_len);
+
 #endif

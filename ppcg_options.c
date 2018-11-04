@@ -103,6 +103,8 @@ ISL_ARG_BOOL(struct ppcg_options, split_tile, 0, "split-tile", 0,
 ISL_ARG_BOOL(struct ppcg_options, min_sync, 0, "min-sync", 0,
 	"minimize synchronization when performing split tiling"
 	"(only for C target)")
+ISL_ARG_STR(struct ppcg_options, tile_sizes, 0, "tile-sizes", "tile-sizes", NULL,
+	"tile sizes (for different sizes)")
 ISL_ARG_INT(struct ppcg_options, tile_size, 'S', "tile-size", "size", 32, NULL)
 ISL_ARG_BOOL(struct ppcg_options, isolate_full_tiles, 0, "isolate-full-tiles",
 	0, "isolate full tiles from partial tiles (hybrid tiling)")

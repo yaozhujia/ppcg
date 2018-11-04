@@ -581,8 +581,11 @@ static __isl_give isl_schedule_node *tile_band(
 	
 	//TODO: check stencil_partern before scheduling
 	int stencil_partern = 1;
-	if(stencil_partern && scop->options->split_tile)
+	if(stencil_partern && scop->options->split_tile){
+		//TODO: why isl_ctx always warns?
+		//sizes = split_tile_read_tile_sizes(node, scop, &n);
 		return split_tile(node, scop, sizes);
+	}
 
 	return tile(node, sizes);
 }

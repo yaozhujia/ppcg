@@ -958,6 +958,82 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	return node;
 }
 
+/* Given a singleton set, extract the first (at most *len) elements
+ * of the single integer tuple into *sizes and update *len if needed.
+ *
+ * If "set" is NULL, then the "sizes" array is not updated.
+ */
+static isl_stat read_sizes_from_set(__isl_take isl_set *set, int *sizes,
+	int *len)
+{
+	int i;
+	int dim;
+
+	if (!set)
+		return isl_stat_ok;
+
+	dim = isl_set_dim(set, isl_dim_set);
+	if (dim < *len)
+		*len = dim;
+
+	for (i = 0; i < *len; ++i) {
+		isl_val *v;
+
+		v = isl_set_plain_get_val_if_fixed(set, isl_dim_set, i);
+		if (!v)
+			goto error;
+		sizes[i] = isl_val_get_num_si(v);
+		isl_val_free(v);
+	}
+
+	isl_set_free(set);
+	return isl_stat_ok;
+error:
+	isl_set_free(set);
+	return isl_stat_error;
+}
+
+__isl_give isl_multi_val *split_tile_read_tile_sizes(__isl_keep isl_schedule_node *node,
+	struct ppcg_scop *scop, int *tile_len)
+{
+	int n;
+	int *tile_size;
+	isl_ctx *ctx;
+	isl_set *size;
+	isl_space *space;
+	isl_multi_val *mv;
+	isl_val_list *list;
+
+	if(!node || isl_schedule_node_get_type(node) != isl_schedule_node_band)
+		return NULL;
+
+	space = isl_schedule_node_band_get_space(node);
+	ctx = isl_space_get_ctx(space);
+
+	tile_size = isl_alloc_array(ctx, int, *tile_len);
+	if (!tile_size)
+		return NULL;
+
+	for (int i = 0; i < *tile_len; i++)
+		tile_size[i] = scop->options->tile_size;
+
+	size = isl_set_read_from_str(ctx, scop->options->tile_sizes);
+	isl_set_dump(size);
+
+	if (read_sizes_from_set(size, tile_size, tile_len) < 0)
+		goto error;
+	
+	//TODO: set for debug
+	//set_used_sizes(gen, "tile", gen->kernel_id, tile_size, *tile_len);
+
+	mv = ppcg_multi_val_from_int_list(space, tile_size);
+
+	return mv;
+error:
+	free(tile_size);
+	return NULL;
+}
+
 static void *split_tile_phases_data_free(struct split_tile_phases_data *data)
 {
 	if (!data)
