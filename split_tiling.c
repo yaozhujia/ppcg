@@ -44,7 +44,7 @@ static __isl_give isl_point *split_tile_obtain_source_tile(__isl_keep isl_schedu
 	params = isl_union_set_params(isl_union_set_copy(tile));
 	tile = isl_union_set_gist_params(tile, params);
 	
-	//TODO: non-continurous parameter dims
+	//TODO: non-continuous parameter dims
 	n = isl_union_set_dim(tile, isl_dim_param);
 	tile = isl_union_set_project_out(tile, isl_dim_param, 0, n);
 
@@ -59,10 +59,11 @@ static __isl_give isl_point *split_tile_obtain_source_tile(__isl_keep isl_schedu
  * that may be lexicographically smaller than the minimum point
  * of the original iteration domain.
  */
-static __isl_give isl_union_set *split_tile_obtain_source_point(__isl_keep isl_schedule_node *node)
+static __isl_give isl_point *split_tile_obtain_source_point(__isl_keep isl_schedule_node *node)
 {
 	int n;
 	isl_set *params;
+	isl_point *result;
 	isl_union_set *domain, *tile, *points;
 	isl_union_map *schedule;
 
@@ -83,11 +84,13 @@ static __isl_give isl_union_set *split_tile_obtain_source_point(__isl_keep isl_s
 	params = isl_union_set_params(isl_union_set_copy(points));
 	points = isl_union_set_gist_params(points, params);
 	
-	//TODO: non-continurous parameter dims
+	//TODO: non-continuous parameter dims
 	n = isl_union_set_dim(points, isl_dim_param);
 	points = isl_union_set_project_out(points, isl_dim_param, 0, n);
+
+	result = isl_union_set_sample_point(points);
 	
-	return points;
+	return result;
 }
 
 /* Obtain the time dimension size of input "domain". This size
@@ -137,16 +140,17 @@ static int obtain_time_dim_size(__isl_keep isl_union_set *domain)
  * iteration domain.
  */
 static int split_tile_compute_dependence(__isl_keep isl_schedule_node *node,
-	__isl_take isl_union_set *source, struct ppcg_scop *scop)
+	__isl_keep isl_point *point, struct ppcg_scop *scop)
 {
 	int n, size, factor;
 	isl_val *val, *val0, *val1, *val2, *val3;
 	isl_set *params;
 	isl_point *pnt0, *pnt1;
-	isl_union_set *domain, *sink;
+	isl_union_set *domain, *source, *sink;
 	isl_union_map *dependence;
 
 	domain = isl_schedule_node_get_domain(node);
+	source = isl_union_set_from_point(isl_point_copy(point));
 
 	dependence = isl_union_map_copy(scop->dep_flow);
 	
@@ -158,7 +162,7 @@ static int split_tile_compute_dependence(__isl_keep isl_schedule_node *node,
 	pnt0 = isl_union_set_sample_point(isl_union_set_copy(source));
 	sink = isl_union_set_apply(source, dependence);
 	sink = isl_union_set_lexmax(sink);
-	//TODO: non-continurous parameter dims
+	//TODO: non-continuous parameter dims
 	n = isl_union_set_dim(sink, isl_dim_param);
 	sink = isl_union_set_project_out(sink, isl_dim_param, 0, n);
 	pnt1 = isl_union_set_sample_point(sink);
@@ -197,7 +201,7 @@ static __isl_give isl_point *split_tile_obtain_sink_tile(__isl_keep isl_schedule
 	schedule = isl_schedule_node_band_get_partial_schedule_union_map(node);
 	tile = isl_union_set_from_point(isl_point_copy(point));
 	tile = isl_union_set_apply(tile, schedule);
-	//TODO: non-continurous parameter dims
+	//TODO: non-continuous parameter dims
 	n = isl_union_set_dim(tile, isl_dim_param);
 	tile = isl_union_set_project_out(tile, isl_dim_param, 0, n);
 	result = isl_union_set_sample_point(tile);
@@ -685,11 +689,8 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 					sprintf(floor_str, "%s%d", floor_str, t_size);
 					floor_str = add_parentheses(floor_str);
 
-					printf("%s\n", floor_str);
 					tail[i] = strcat(tail[i], floor_str);
-					printf("%s\n", tail[i]);
 					lb[i] = strcat(lb[i], tail[i]);
-					printf("%s\n", lb[i]);
 
 				}
 				printf("############lb%d[%d]=%s###################\n", order, i, lb[i]);
@@ -720,11 +721,8 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 					sprintf(floor_str, "%s%d", floor_str, t_size);
 					floor_str = add_parentheses(floor_str);
 
-					printf("%s\n", floor_str);
 					tail[i] = strcat(tail[i], floor_str);
-					printf("%s\n", tail[i]);
 					ub[i] = strcat(ub[i], tail[i]);
-					printf("%s\n", lb[i]);
 				}
 				printf("############ub%d[%d]=%s###################\n", order, i, ub[i]);
 				constraints[i] = strcat(constraints[i], "<");
@@ -856,7 +854,7 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	int n, n_list, bound, delta, factor, splitted, mini_sync;
 	isl_ctx *ctx;
 	isl_union_map *dependence;
-	isl_union_set *domain, *point;
+	isl_union_set *domain;
 	isl_point *source_tile, *sink_tile, *source_point, *sink_point;
 	isl_val *v0, *v1, *slope;
 	isl_multi_val *copy_sizes;
@@ -897,16 +895,12 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	isl_point_dump(source_tile);
 	
 	//obtain the lexmin point of the lexmin tile
-	point = split_tile_obtain_source_point(node);
-	printf("####################point####################\n");
-	isl_union_set_dump(point);
-
-	source_point = isl_union_set_sample_point(isl_union_set_copy(point));
+	source_point = split_tile_obtain_source_point(node);
 	printf("####################source point####################\n");
 	isl_point_dump(source_point);
 	
 	//compute the size-th power
-	factor = split_tile_compute_dependence(node, point, scop);
+	factor = split_tile_compute_dependence(node, source_point, scop);
 	printf("####################factor=%d####################\n", factor);
 	
 	//compute the lexmax sink of size-th power
