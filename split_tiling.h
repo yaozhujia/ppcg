@@ -31,6 +31,8 @@
  * coefficient of the variable of time dimension after scheduling, and it can
  * be obtained from the scheduling result of the isl scheduler.
  * 
+ * "constant" records the constant term after scheduling.
+ * 
  *  "bound" is the bounding face introduced by split tiling. In particular,
  * it should be in the form of
  * 
@@ -59,7 +61,9 @@ struct split_tile_phases_data{
 	
 	char **stmt;
 	char **expr;
+	int *constant;
 	char **bound;
+
 	char **time_dim_name;
 	char **space_dim_name;
 
