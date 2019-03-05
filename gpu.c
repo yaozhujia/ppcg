@@ -35,6 +35,7 @@
 #include "ppcg_options.h"
 #include "print.h"
 #include "util.h"
+#include "split_tiling.h"
 
 struct gpu_array_info;
 
@@ -4080,6 +4081,72 @@ static __isl_give isl_schedule_node *try_hybrid_tile(struct gpu_gen *gen,
 	return node;
 }
 
+/* See if split tiling can be performed on "node".
+ * If so, apply split tiling and return the updated schedule tree.
+ * If not, return the original schedule tree.
+ * Return NULL on error.
+ *
+ * First check if "node", together with its parent, meets
+ * the basic requirements for split tiling.
+ * If so, compute the relative dependence distances of "node"
+ * with respect to its parent and check if they are sufficiently bounded.
+ * If so, apply split tiling using user specified tile sizes.
+ *
+ * The tile sizes are read before the dependence distance bounds are
+ * computed, because the user may have specified fewer dimensions
+ * than are available.  In this case, the remaining schedule dimensions
+ * are split off and the dependence distances should be computed
+ * after these dimensions have been split off.
+ */
+static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
+	__isl_take isl_schedule_node *node)
+{
+	int tile_len;
+	int *tile_size;
+	int scale;
+	isl_id *id;
+	isl_multi_val *sizes;
+
+	tile_len = isl_schedule_node_band_n_member(node);
+	tile_size = read_tile_sizes(gen, &tile_len);
+	if (!tile_size)
+		return isl_schedule_node_free(node);
+	
+	if (tile_len < isl_schedule_node_band_n_member(node))
+		node = isl_schedule_node_band_split(node, tile_len);
+	sizes = construct_band_tiles_sizes(node, tile_size);
+	node = split_tile(node, gen->prog->scop, isl_multi_val_copy(sizes));
+	node = isl_schedule_node_child(node, 0);
+	tile_size = tile_size + 1;
+
+	for (int i=0; i< isl_schedule_node_n_children(node); i++) {
+		node = isl_schedule_node_child(node, i);
+		while(isl_schedule_node_get_type(node) != isl_schedule_node_band)
+			node = isl_schedule_node_child(node, 0);
+		node = isl_schedule_node_child(node, 0);
+		if (gen->options->unroll_gpu_tile)
+			node = ppcg_set_schedule_node_type(node, isl_ast_loop_unroll);
+		id = isl_id_alloc(gen->ctx, "thread", NULL);
+		node = isl_schedule_node_insert_mark(node, id);
+		node = isl_schedule_node_parent(node);
+
+		scale = gen->options->scale_tile_loops;
+		sizes = construct_band_tiles_sizes(node, tile_size);
+		isl_multi_val_dump(sizes);
+
+		node = gpu_create_kernel(gen, node, scale, sizes);
+		node = isl_schedule_node_parent(node);
+		node = isl_schedule_node_parent(node);
+		//isl_multi_val_free(sizes);
+		//free(tile_size);
+	}
+
+	node = isl_schedule_node_parent(node);
+	isl_schedule_node_dump(node);
+
+	return node;
+}
+
 /* If "node" is the outermost permutable band that can be mapped to block and
  * thread identifiers in its branch (or the root of a subtree with
  * no such outer bands),
@@ -4127,6 +4194,11 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 		if (node != saved)
 			return node;
 	}
+
+	//TODO: check stencil_partern before scheduling
+	int stencil_partern = 1;
+	if(stencil_partern && gen->options->split_tile)
+		return try_split_tile(gen, node);
 
 	if (isl_schedule_node_get_type(node) != isl_schedule_node_band ||
 	    !isl_schedule_node_band_member_get_coincident(node, 0))
@@ -5603,6 +5675,26 @@ static struct gpu_stmt *extract_stmts(isl_ctx *ctx, struct ppcg_scop *scop,
 	return stmts;
 }
 
+/*
+ * Change all coincidents to "1" when split tiling is applied and
+ * the input satisfies the stencil partern.
+ */
+static __isl_give isl_schedule *force_coincidents(__isl_keep isl_schedule *schedule)
+{
+
+	isl_schedule_node *node = isl_schedule_get_root(schedule);
+	while (isl_schedule_node_get_type(node) != isl_schedule_node_band)
+		node = isl_schedule_node_child(node, 0);
+	for (int i=0; i<isl_schedule_node_band_n_member(node); i++)
+		if(!isl_schedule_node_band_member_get_coincident(node, i))
+			node = isl_schedule_node_band_member_set_coincident(node, i, 1);
+	schedule = isl_schedule_node_get_schedule(node);
+	isl_schedule_node_free(node);
+	isl_schedule_dump(schedule);
+
+	return schedule;
+}
+
 /* Generate CUDA code for "scop" and print it to "p".
  * After generating an AST for the transformed scop as explained below,
  * we call "gen->print" to print the AST in the desired output format
@@ -5681,6 +5773,10 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 
 	gen->prog = prog;
 	schedule = get_schedule(gen);
+
+	//TODO: handle more complex cases or check stencil partern
+	int stencil_partern = 1;
+	schedule = force_coincidents(schedule);
 
 	any_permutable = has_any_permutable_node(schedule);
 	if (any_permutable < 0 || !any_permutable) {

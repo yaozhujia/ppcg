@@ -25,7 +25,9 @@ void ppcg_options_set_target_defaults(struct ppcg_options *options)
 	char *argv[2] = { NULL };
 
 	argv[0] = "ppcg_options_set_target_defaults";
-	if (options->target == PPCG_TARGET_C)
+	//if (options->target == PPCG_TARGET_C)
+	if (options->target == PPCG_TARGET_C ||
+			options->split_tile)
 		argv[1] = "--no-schedule-outer-coincidence";
 	else
 		argv[1] = "--schedule-outer-coincidence";
