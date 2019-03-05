@@ -4105,7 +4105,7 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 	int *tile_size;
 	int scale;
 	isl_id *id;
-	isl_multi_val *sizes;
+	isl_multi_val *sizes, *sub_sizes;
 
 	tile_len = isl_schedule_node_band_n_member(node);
 	tile_size = read_tile_sizes(gen, &tile_len);
@@ -4115,34 +4115,34 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 	if (tile_len < isl_schedule_node_band_n_member(node))
 		node = isl_schedule_node_band_split(node, tile_len);
 	sizes = construct_band_tiles_sizes(node, tile_size);
-	node = split_tile(node, gen->prog->scop, isl_multi_val_copy(sizes));
+	node = split_tile(node, gen->prog->scop, sizes);
 	node = isl_schedule_node_child(node, 0);
 	tile_size = tile_size + 1;
 
-	for (int i=0; i< isl_schedule_node_n_children(node); i++) {
+	for (int i=0; i<isl_schedule_node_n_children(node); i++) {
 		node = isl_schedule_node_child(node, i);
 		while(isl_schedule_node_get_type(node) != isl_schedule_node_band)
 			node = isl_schedule_node_child(node, 0);
 		node = isl_schedule_node_child(node, 0);
+
 		if (gen->options->unroll_gpu_tile)
 			node = ppcg_set_schedule_node_type(node, isl_ast_loop_unroll);
+		
 		id = isl_id_alloc(gen->ctx, "thread", NULL);
 		node = isl_schedule_node_insert_mark(node, id);
 		node = isl_schedule_node_parent(node);
 
 		scale = gen->options->scale_tile_loops;
-		sizes = construct_band_tiles_sizes(node, tile_size);
-		isl_multi_val_dump(sizes);
+		sub_sizes = construct_band_tiles_sizes(node, tile_size);
 
-		node = gpu_create_kernel(gen, node, scale, sizes);
+		node = gpu_create_kernel(gen, node, scale, sub_sizes);
 		node = isl_schedule_node_parent(node);
 		node = isl_schedule_node_parent(node);
-		//isl_multi_val_free(sizes);
-		//free(tile_size);
+	
+		isl_multi_val_free(sub_sizes);
 	}
 
 	node = isl_schedule_node_parent(node);
-	isl_schedule_node_dump(node);
 
 	return node;
 }
@@ -5679,18 +5679,30 @@ static struct gpu_stmt *extract_stmts(isl_ctx *ctx, struct ppcg_scop *scop,
  * Change all coincidents to "1" when split tiling is applied and
  * the input satisfies the stencil partern.
  */
-static __isl_give isl_schedule *force_coincidents(__isl_keep isl_schedule *schedule)
+static __isl_give isl_schedule *force_coincidents(__isl_take isl_schedule *schedule)
 {
+	isl_schedule_node *node;
+	
+	node = isl_schedule_get_root(schedule);
 
-	isl_schedule_node *node = isl_schedule_get_root(schedule);
-	while (isl_schedule_node_get_type(node) != isl_schedule_node_band)
+	while (isl_schedule_node_get_type(node) != isl_schedule_node_band){
 		node = isl_schedule_node_child(node, 0);
+		//We currently assume a sequence/set node does not hold stencil properties
+		if(isl_schedule_node_get_type(node) == isl_schedule_node_sequence ||
+				isl_schedule_node_get_type(node) == isl_schedule_node_set ||
+				isl_schedule_node_get_type(node) == isl_schedule_node_leaf){
+			isl_schedule_node_free(node);
+			return schedule;
+		}
+	}
+
 	for (int i=0; i<isl_schedule_node_band_n_member(node); i++)
 		if(!isl_schedule_node_band_member_get_coincident(node, i))
 			node = isl_schedule_node_band_member_set_coincident(node, i, 1);
+	
+	isl_schedule_free(schedule);
 	schedule = isl_schedule_node_get_schedule(node);
 	isl_schedule_node_free(node);
-	isl_schedule_dump(schedule);
 
 	return schedule;
 }
@@ -5776,7 +5788,8 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 
 	//TODO: handle more complex cases or check stencil partern
 	int stencil_partern = 1;
-	schedule = force_coincidents(schedule);
+	if(stencil_partern)
+		schedule = force_coincidents(schedule);
 
 	any_permutable = has_any_permutable_node(schedule);
 	if (any_permutable < 0 || !any_permutable) {
