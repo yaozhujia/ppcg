@@ -4104,6 +4104,7 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 	int tile_len;
 	int *tile_size;
 	int scale;
+	int i;
 	isl_id *id;
 	isl_multi_val *sizes, *sub_sizes;
 
@@ -4119,7 +4120,7 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 	node = isl_schedule_node_child(node, 0);
 	tile_size = tile_size + 1;
 
-	for (int i=0; i<isl_schedule_node_n_children(node); i++) {
+	for (i=0; i<isl_schedule_node_n_children(node); i++) {
 		node = isl_schedule_node_child(node, i);
 		while(isl_schedule_node_get_type(node) != isl_schedule_node_band)
 			node = isl_schedule_node_child(node, 0);
@@ -5681,6 +5682,7 @@ static struct gpu_stmt *extract_stmts(isl_ctx *ctx, struct ppcg_scop *scop,
  */
 static __isl_give isl_schedule *force_coincidents(__isl_take isl_schedule *schedule)
 {
+	int i;
 	isl_schedule_node *node;
 	
 	node = isl_schedule_get_root(schedule);
@@ -5696,7 +5698,7 @@ static __isl_give isl_schedule *force_coincidents(__isl_take isl_schedule *sched
 		}
 	}
 
-	for (int i=0; i<isl_schedule_node_band_n_member(node); i++)
+	for (i=0; i<isl_schedule_node_band_n_member(node); i++)
 		if(!isl_schedule_node_band_member_get_coincident(node, i))
 			node = isl_schedule_node_band_member_set_coincident(node, i, 1);
 	
