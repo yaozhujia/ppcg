@@ -4136,7 +4136,7 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 		scale = gen->options->scale_tile_loops;
 		sub_sizes = construct_band_tiles_sizes(node, tile_size);
 
-		node = gpu_create_kernel(gen, node, scale, sub_sizes);
+		node = gpu_create_kernel(gen, node, 0, sub_sizes);
 		node = isl_schedule_node_parent(node);
 		node = isl_schedule_node_parent(node);
 	
