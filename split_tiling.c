@@ -223,7 +223,7 @@ static int split_tile_compute_dependence(__isl_keep isl_schedule_node *node,
  */
 static isl_stat check_space_dependence(__isl_take isl_map *map, void *user)
 {
-	int n, m;
+	int i, j, n, m;
 	isl_basic_map_list *list, **result = user;
 
 	if(!*result)
@@ -231,12 +231,12 @@ static isl_stat check_space_dependence(__isl_take isl_map *map, void *user)
 
 	list = isl_map_get_basic_map_list(map);
 	n = isl_basic_map_list_n_basic_map(list);
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 		isl_basic_map *bmap = isl_basic_map_list_get_basic_map(list, i);
 		//isl_basic_map_dump(bmap);
 		isl_constraint_list *constraints = isl_basic_map_get_constraint_list(bmap);
 		m = isl_constraint_list_n_constraint(constraints);
-		for (int j=0; j<m; j++){
+		for (j=0; j<m; j++){
 			isl_constraint *constraint = isl_constraint_list_get_constraint(constraints, j);
 			if(isl_constraint_involves_dims(constraint, isl_dim_set, 0, 1)){
 				isl_val *const_val;
@@ -273,7 +273,7 @@ static isl_stat check_space_dependence(__isl_take isl_map *map, void *user)
 static int split_tile_compute_space_dependence(__isl_keep isl_schedule_node *node,
 	__isl_keep isl_point *point, struct ppcg_scop *scop)
 {
-	int n_stmt, n, m, shift;
+	int i, j, n_stmt, n, m, shift;
 	isl_ctx *ctx;
 	isl_set *params;
 	isl_union_set *domain;
@@ -301,11 +301,11 @@ static int split_tile_compute_space_dependence(__isl_keep isl_schedule_node *nod
 	isl_basic_map_list_dump(space_dep_bmap_list);
 
 	n = isl_basic_map_list_n_basic_map(space_dep_bmap_list);
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 		isl_basic_map *bmap = isl_basic_map_list_get_basic_map(space_dep_bmap_list, i);
 		isl_constraint_list *constraints = isl_basic_map_get_constraint_list(bmap);
 		m = isl_constraint_list_n_constraint(constraints);
-		for (int j=0; j<m; j++){
+		for (j=0; j<m; j++){
 			isl_constraint *constraint = isl_constraint_list_get_constraint(constraints, j);
 			if(isl_constraint_involves_dims(constraint, isl_dim_set, 1, 1)){
 				int value;
@@ -507,11 +507,11 @@ static char *drop_brackets(char *name)
  */
 static char *drop_parameters_and_to(char *name)
 {
-	int n;
+	int i, n;
 
 	n = strlen(name);
 
-	for (int i=0; i<n-4; i++)
+	for (i=0; i<n-4; i++)
 		if ( name[i] == '-' && name[i+1] == '>'){
 			printf("%s\n",&name[i+2]);
         	return &name[i+2];
@@ -586,7 +586,7 @@ static char *add_braces(char *name)
 static void *collect_stmts(__isl_keep isl_union_set *uset,
 	struct split_tile_phases_data *data)
 {
-	int n;
+	int i, n;
 	isl_ctx *ctx;
 	isl_set_list *list;
 
@@ -598,7 +598,7 @@ static void *collect_stmts(__isl_keep isl_union_set *uset,
 
 	data->stmt = (char **) calloc(data->n_stmt, sizeof(char *));
 
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 		isl_set *set;
 		
 		set = isl_set_list_get_set(list, i);
@@ -640,7 +640,7 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 {
 	//n: the number of union_pw_aff. In other words, the number of band dimensions
 	//m: the number of pw_aff. In ohter words, the number of statements.
-	int n, m;
+	int i, j, n, m;
 	char *expr;
 	isl_ctx *ctx;
 	isl_map *map;
@@ -651,7 +651,7 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 	data->constant = (int *) calloc(data->n_stmt, sizeof(int));
 	data->no_constraints = (int *) calloc(data->n_stmt, sizeof(int));
 	data->expr = (char **) calloc(data->n_stmt, sizeof(char *));
-	for (int i=0; i<data->n_stmt; i++)
+	for (i=0; i<data->n_stmt; i++)
 		data->expr[i] = (char *) calloc(256, sizeof(char));
 	expr = (char *) calloc(256, sizeof(char));
 	
@@ -659,14 +659,14 @@ static void *construct_expr(__isl_keep isl_multi_union_pw_aff *mupa,
 
 	ctx = isl_multi_union_pw_aff_get_ctx(copy);
 	
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 		isl_union_pw_aff *upa = isl_multi_union_pw_aff_get_union_pw_aff(copy, i);
 		printf("####################upa####################\n");
 		isl_union_pw_aff_dump(upa);
 
 		isl_pw_aff_list *list = isl_union_pw_aff_get_pw_aff_list(upa);
 		m = isl_pw_aff_list_n_pw_aff(list);
-		for (int j=0; j<m; j++){
+		for (j=0; j<m; j++){
 			isl_pw_aff *pa = isl_pw_aff_list_get_pw_aff(list, j);
 			printf("####################pa####################\n");
 			isl_pw_aff_dump(pa);
