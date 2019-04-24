@@ -723,7 +723,7 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 	__isl_keep isl_val *slope, int space_shift,
 	struct split_tile_phases_data *data)
 {
-	int n, size;
+	int i, n, size;
 	char *bound, *expr;
 
 	n = isl_set_list_n_set(data->list);
@@ -731,7 +731,7 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 	data->bound = (char **) calloc(n, sizeof(char *));
 	data->time_dim_name = (char **) calloc(n, sizeof(char *));
 	data->space_dim_name = (char **) calloc(n, sizeof(char *));
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 		data->bound[i] = (char *) calloc(256, sizeof(char));
 		data->time_dim_name[i] = (char *) calloc(256, sizeof(char));
 		data->space_dim_name[i] = (char *) calloc(256, sizeof(char));
@@ -739,7 +739,7 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 	bound = (char *) calloc(256, sizeof(char));
 	expr = (char *) calloc(256, sizeof(char));
 
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 
 		isl_set *set = isl_set_list_get_set(data->list, i);
 		isl_val *val = isl_multi_val_get_val(sizes, 1);
@@ -821,7 +821,7 @@ static void *construct_bound(__isl_keep isl_multi_val *sizes,
 __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 	struct split_tile_phases_data *data, int order)
 {	
-	int n, t_size, s_size;
+	int i, n, t_size, s_size;
 	char *phase_string, *shift;
 	char **lb, **ub, **constraints, **tail;
 	isl_ctx *ctx;
@@ -837,7 +837,7 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 	lb = (char **) calloc(n, sizeof(char *));
 	ub = (char **) calloc(n, sizeof(char *));
 	tail = (char **) calloc(n, sizeof(char *));
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 		constraints[i] = (char *) calloc(256, sizeof(char));
 		lb[i] = (char *) calloc(256, sizeof(char));
 		ub[i] = (char *) calloc(256, sizeof(char));
@@ -849,7 +849,7 @@ __isl_give isl_union_set *construct_phase(__isl_keep isl_multi_val *sizes,
 	val1 = isl_multi_val_get_val(sizes, 1);
 	s_size = isl_val_get_num_si(val1);
 
-	for (int i=0; i<n; i++){
+	for (i=0; i<n; i++){
 
 		if(i == 0)
 			strcpy(constraints[i], data->stmt[i]);
@@ -953,7 +953,7 @@ static void *split_tile_construct_phases(__isl_keep isl_union_set_list *phases,
 	__isl_take isl_multi_val *sizes, __isl_keep isl_val *slope,
 	int space_shift, int n_list, int splitted)
 {
-	int n, m, scale, shift, dim;
+	int i, n, m, scale, shift, dim;
 	isl_ctx *ctx;
 	isl_val *val;
 	isl_union_set *uset, *phase;
@@ -1015,7 +1015,7 @@ static void *split_tile_construct_phases(__isl_keep isl_union_set_list *phases,
 
 	construct_bound(sizes, slope, space_shift, data);
 
-	for(int i=0; i<n_list; i++){
+	for(i=0; i<n_list; i++){
 		phase = construct_phase(sizes, data, i);
 		printf("####################phase%d####################\n", i);
 		isl_union_set_dump(phase);
@@ -1190,7 +1190,7 @@ error:
 __isl_give isl_multi_val *split_tile_read_tile_sizes(__isl_keep isl_schedule_node *node,
 	struct ppcg_scop *scop, int *tile_len)
 {
-	int n;
+	int i, n;
 	int *tile_size;
 	isl_ctx *ctx;
 	isl_set *size;
@@ -1208,7 +1208,7 @@ __isl_give isl_multi_val *split_tile_read_tile_sizes(__isl_keep isl_schedule_nod
 	if (!tile_size)
 		return NULL;
 
-	for (int i = 0; i < *tile_len; i++)
+	for (i = 0; i < *tile_len; i++)
 		tile_size[i] = scop->options->tile_size;
 
 	size = isl_set_read_from_str(ctx, scop->options->tile_sizes);
