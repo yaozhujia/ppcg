@@ -1124,7 +1124,7 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 
 	//. split the band for multi-dimensional cases
 	if(n > 2){
-		node = isl_schedule_node_band_split(node, 2);
+		node = isl_schedule_node_band_split(node, 1);
 		splitted = 1;
 	}
 	else
@@ -1135,11 +1135,11 @@ __isl_give isl_schedule_node *split_tile(__isl_take isl_schedule_node *node,
 	phases = split_tile_construct_phases(phases, node, scop, sizes, slope, shift, n_list, splitted);
 	
 	//insert a sequence node with phases
-	node = isl_schedule_node_band_split(node, 1);
+	if(!splitted)
+		node = isl_schedule_node_band_split(node, 1);
 	node = isl_schedule_node_child(node, 0);
 	node = isl_schedule_node_insert_sequence(node, phases);
 	node = isl_schedule_node_parent(node);
-	//isl_schedule_node_dump(node);
 
 	isl_union_set_free(domain);
 	isl_val_free(v0);
