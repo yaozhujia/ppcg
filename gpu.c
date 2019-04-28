@@ -4124,6 +4124,8 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 		node = isl_schedule_node_child(node, i);
 		while(isl_schedule_node_get_type(node) != isl_schedule_node_band)
 			node = isl_schedule_node_child(node, 0);
+		node = isl_schedule_node_band_split(node, 1);
+		node = isl_schedule_node_child(node, 0);
 		node = isl_schedule_node_child(node, 0);
 
 		if (gen->options->unroll_gpu_tile)
@@ -4132,7 +4134,9 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 		id = isl_id_alloc(gen->ctx, "thread", NULL);
 		node = isl_schedule_node_band_split(node, 1);
 		node = isl_schedule_node_child(node, 0);
+		node = isl_schedule_node_band_split(node, 1);
 		node = isl_schedule_node_insert_mark(node, id);
+		node = isl_schedule_node_parent(node);
 		node = isl_schedule_node_parent(node);
 		node = isl_schedule_node_parent(node);
 
