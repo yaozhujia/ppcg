@@ -32,6 +32,7 @@
 #include "util.h"
 
 #include "split_tiling.h"
+#include "overlapped_tiling.h"
 
 /* Representation of a statement inside a generated AST.
  *
@@ -586,6 +587,8 @@ static __isl_give isl_schedule_node *tile_band(
 		//sizes = split_tile_read_tile_sizes(node, scop, &n);
 		return split_tile(node, scop, sizes);
 	}
+	if(stencil_partern && scop->options->rectangle)
+		return overlapped_tile(node, scop, sizes);
 
 	return tile(node, sizes);
 }

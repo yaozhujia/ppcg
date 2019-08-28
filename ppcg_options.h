@@ -38,6 +38,10 @@ struct ppcg_options {
 	int min_sync;
 	char *tile_sizes;
 
+	/* Perform overlapped tiling. */
+	int rectangle;
+	int scalene;
+
 	/* Isolate full tiles from partial tiles. */
 	int isolate_full_tiles;
 

@@ -54,6 +54,8 @@ ppcg_SOURCES = \
 	schedule.h \
 	split_tiling.c \
 	split_tiling.h \
+	overlapped_tiling.c \
+	overlapped_tiling.h \
 	ppcg_options.c \
 	ppcg_options.h \
 	ppcg.c \

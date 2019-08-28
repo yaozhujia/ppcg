@@ -27,7 +27,7 @@ void ppcg_options_set_target_defaults(struct ppcg_options *options)
 	argv[0] = "ppcg_options_set_target_defaults";
 	//if (options->target == PPCG_TARGET_C)
 	if (options->target == PPCG_TARGET_C ||
-			options->split_tile)
+			options->split_tile || options->rectangle)
 		argv[1] = "--no-schedule-outer-coincidence";
 	else
 		argv[1] = "--schedule-outer-coincidence";
@@ -102,6 +102,8 @@ ISL_ARG_BOOL(struct ppcg_options, tile, 0, "tile", 0,
 	"perform tiling (C target)")
 ISL_ARG_BOOL(struct ppcg_options, split_tile, 0, "split-tile", 0,
 	"perform split tiling")
+ISL_ARG_BOOL(struct ppcg_options, rectangle, 0, "rectangle", 0,
+	"perform overlapped tiling")
 ISL_ARG_BOOL(struct ppcg_options, min_sync, 0, "min-sync", 0,
 	"minimize synchronization when performing split tiling"
 	"(only for C target)")
