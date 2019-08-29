@@ -587,6 +587,7 @@ static __isl_give isl_schedule_node *tile_band(
 		//sizes = split_tile_read_tile_sizes(node, scop, &n);
 		return split_tile(node, scop, sizes);
 	}
+	
 	if(stencil_partern && scop->options->rectangle)
 		return overlapped_tile(node, scop, sizes);
 
@@ -709,7 +710,7 @@ static __isl_give isl_schedule *get_schedule(struct ppcg_scop *ps,
 	ctx = isl_union_set_get_ctx(ps->domain);
 	schedule = ppcg_get_schedule(ctx, options,
 				    &optionally_compute_schedule, ps);
-	if (ps->options->tile || ps->options->split_tile)
+	if (ps->options->tile || ps->options->split_tile || ps->options->rectangle)
 		schedule = isl_schedule_map_schedule_node_bottom_up(schedule,
 							&tile_band, ps);
 
