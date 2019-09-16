@@ -213,6 +213,51 @@ static __isl_give isl_union_map* construct_starting_point(__isl_take isl_union_m
     return data.result;
 }
 
+struct overlapped_data {
+    isl_union_map *expansion;
+    isl_union_map *result;
+    isl_val *size;
+};
+
+static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
+    int dim;
+    isl_aff *aff, *sub;
+    isl_set *set;
+    isl_val *val;
+    isl_space *space;
+    isl_constraint *c;
+    isl_local_space *ls;
+    struct overlapped_data *data = user;
+
+    set = isl_map_domain(isl_map_copy(map));
+    dim = isl_set_n_dim(set);
+    isl_set_free(set);
+
+    set = isl_map_wrap(map);
+    space = isl_set_get_space(set);
+    ls = isl_local_space_from_space(space);
+    //todo: check positon
+    //if(dim < 2)
+        //isl_die;
+    
+    // construct upper bound affine expr
+    aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, 1);
+    val = isl_val_copy(data->size);
+    val = isl_val_sub_ui(val, 1);
+    aff = isl_aff_add_constant_val(aff, val);
+    sub = isl_aff_var_on_domain(ls, isl_dim_set, 1 + dim);
+    aff = isl_aff_sub(aff, sub);
+    
+    // construct upper bound constraint from affine expr
+    c = isl_inequality_from_aff(aff);
+    set = isl_set_add_constraint(set, c);
+    map = isl_set_unwrap(set);
+    
+    data->result = isl_union_map_add_map(data->result, map);
+
+    return isl_stat_ok;
+}
+
 static __isl_give isl_union_map* update_expansion(__isl_take isl_union_map *expansion,
     __isl_take isl_union_set *domain, __isl_take isl_multi_union_pw_aff *mupa,
     __isl_take isl_multi_val *sizes)
@@ -242,10 +287,17 @@ static __isl_give isl_union_map* update_expansion(__isl_take isl_union_map *expa
     size = isl_multi_val_get_val(sizes, 1);
     isl_multi_val_free(sizes);
 
-    data.expansion = construct_starting_point(data.expansion, upa, size);
-    isl_union_map_dump(data.expansion);
+    data.expansion = construct_starting_point(data.expansion, upa, isl_val_copy(size));
 
-    return data.expansion;
+    space = isl_union_map_get_space(data.expansion);
+    umap = isl_union_map_empty(space);
+
+    struct overlapped_data overlap = { data.expansion, umap, size };
+    isl_union_map_foreach_map(overlap.expansion, &construct_overlapped_cond, &overlap);
+    isl_val_free(overlap.size);
+    isl_union_map_free(overlap.expansion);
+
+    return overlap.result;
 }
 
 __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node,
