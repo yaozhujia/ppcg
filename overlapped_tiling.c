@@ -107,7 +107,7 @@ isl_stat add_space_dim_bounds(__isl_take isl_map *map, void *user) {
 struct starting_point_data {
     isl_union_map *expansion;
     isl_union_map *result;
-    isl_val *size;
+    isl_multi_val *sizes;
 };
 
 /* Assign "aff" to *user and return -1, effectively extracting
@@ -175,9 +175,9 @@ static isl_stat starting_point_cond(__isl_take isl_pw_aff *pa, void *user) {
                 aff = isl_aff_add(aff, var);
         }
         copy = isl_aff_copy(aff);
-        copy = isl_aff_scale_down_val(copy, isl_val_copy(data->size));
+        copy = isl_aff_scale_down_val(copy, isl_multi_val_get_val(data->sizes, 1));
         copy = isl_aff_floor(copy);
-        copy = isl_aff_scale_val(copy, isl_val_copy(data->size));
+        copy = isl_aff_scale_val(copy, isl_multi_val_get_val(data->sizes, 1));
         aff = isl_aff_sub(aff, copy);
 
         c = isl_equality_from_aff(aff);
@@ -194,7 +194,7 @@ static isl_stat starting_point_cond(__isl_take isl_pw_aff *pa, void *user) {
 }
 
 static __isl_give isl_union_map* construct_starting_point(__isl_take isl_union_map *expansion,
-    __isl_take isl_union_pw_aff *upa, __isl_take isl_val *size)
+    __isl_take isl_union_pw_aff *upa, __isl_take isl_multi_val *sizes)
 {
     isl_space *space;
     isl_union_map *result;
@@ -202,29 +202,85 @@ static __isl_give isl_union_map* construct_starting_point(__isl_take isl_union_m
     space = isl_union_map_get_space(expansion);
     result = isl_union_map_empty(space);
 
-    struct starting_point_data data = { expansion, result, size};
+    struct starting_point_data data = { expansion, result, sizes};
 
     isl_union_pw_aff_foreach_pw_aff(upa, &starting_point_cond, &data);
 
-    isl_val_free(data.size);
+    isl_multi_val_free(data.sizes);
     isl_union_pw_aff_free(upa);
     isl_union_map_free(data.expansion);
 
     return data.result;
 }
 
+static isl_stat obtain_maxmin_in_bmap(__isl_take isl_basic_map *bmap, void *user) {
+    int i, n, dim;
+    isl_aff *aff;
+    isl_val *val, *copy, *max, *min;
+    isl_basic_set *bset;
+    isl_constraint *c;
+    isl_constraint_list *clist;
+    isl_val_list **list = user;
+
+    bset = isl_basic_map_domain(isl_basic_map_copy(bmap));
+    dim = isl_basic_set_n_dim(bset);
+    isl_basic_set_free(bset);
+
+    //todo: check positon
+    //if(dim < 2)
+        //isl_die;
+    //todo: multiple overlapped cases
+    clist = isl_basic_map_get_constraint_list(bmap);
+    for (i = 0; i < isl_constraint_list_n_constraint(clist); i++) {
+        c = isl_constraint_list_get_constraint(clist, i);
+        val = isl_constraint_get_coefficient_val(c, isl_dim_out, 1);
+        isl_constraint_free(c);
+        n = isl_val_list_n_val(*list);
+        if (n == 0) {
+            *list = isl_val_list_add(*list, isl_val_copy(val));
+            *list = isl_val_list_add(*list, val);
+        }
+        else {
+            max = isl_val_list_get_val(*list, 0);
+            min = isl_val_list_get_val(*list, 1);
+            if (isl_val_ge(val, max)) {
+                copy = isl_val_copy(val);
+                isl_val_list_set_val(*list, 0, copy);
+            }
+            if (isl_val_le(val, min)) {
+                copy = isl_val_copy(val);
+                isl_val_list_set_val(*list, 1, copy);
+            }
+            isl_val_free(max);
+            isl_val_free(min);
+            isl_val_free(val);
+        }
+    }
+    isl_constraint_list_free(clist);
+    
+    isl_basic_map_free(bmap);
+
+    return isl_stat_ok;
+}
+
 struct overlapped_data {
     isl_union_map *expansion;
     isl_union_map *result;
-    isl_val *size;
+    isl_union_map *dep;
+    isl_multi_val *sizes;
 };
 
 static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
-    int dim;
+    int i, dim;
     isl_aff *aff, *sub;
-    isl_set *set;
-    isl_val *val;
+    isl_bool empty;
+    isl_ctx *ctx;
+    isl_map *candidate;
+    isl_set *set, *domain;
+    isl_val *val, *coeff, *rev;
     isl_space *space;
+    isl_map_list *list;
+    isl_val_list *vlist;
     isl_constraint *c;
     isl_local_space *ls;
     struct overlapped_data *data = user;
@@ -242,7 +298,7 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
     
     // construct upper bound affine expr
     aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, 1);
-    val = isl_val_copy(data->size);
+    val = isl_multi_val_get_val(data->sizes, 1);
     val = isl_val_sub_ui(val, 1);
     aff = isl_aff_add_constant_val(aff, val);
     sub = isl_aff_var_on_domain(ls, isl_dim_set, 1 + dim);
@@ -252,20 +308,76 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
     c = isl_inequality_from_aff(aff);
     set = isl_set_add_constraint(set, c);
     map = isl_set_unwrap(set);
+
+    // compute coefficient for lower bounds
+    list = isl_union_map_get_map_list(data->dep);
+    for (i = 0; i < isl_map_list_n_map(list); i++) {
+        candidate = isl_map_copy(isl_map_list_get_map(list, i));
+        domain = isl_map_domain(candidate);
+        domain = isl_set_intersect(domain, isl_map_domain(isl_map_copy(map)));
+        empty = isl_set_is_empty(domain);
+        isl_set_free(domain);
+        if(empty)
+            continue;
+        else
+            break;
+    }
+    isl_map_list_free(list);
+
+    ctx = isl_union_map_get_ctx(data->dep);
+    vlist = isl_val_list_alloc(ctx, 2);
+    isl_map_foreach_basic_map(candidate, &obtain_maxmin_in_bmap, &vlist);
+    isl_map_free(candidate);
+
+    coeff = isl_val_list_get_val(vlist, 0);
+    coeff = isl_val_sub(coeff, isl_val_list_get_val(vlist, 1));
+    isl_val_list_free(vlist);
+
+    // construct lower bound affine expr
+    set = isl_map_wrap(map);
+    space = isl_set_get_space(set);
+    ls = isl_local_space_from_space(space);
+    
+    // first construct time dim affine expr
+    aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, 0);
+    //todo: correct size
+    val = isl_multi_val_get_val(data->sizes, 0);
+    sub = isl_aff_scale_down_val(isl_aff_copy(aff), isl_val_copy(val));
+    sub = isl_aff_floor(sub);
+    sub = isl_aff_scale_val(sub, val);
+    sub = isl_aff_sub(aff, sub);
+
+    // next construct lower bound affine expr
+    val = isl_multi_val_get_val(data->sizes, 1);
+    val = isl_val_sub_ui(val, 1);
+    rev = isl_val_int_from_si(ctx, -1);
+    sub = isl_aff_scale_val(sub, rev);
+    sub = isl_aff_add_constant_val(sub, val);
+    sub = isl_aff_scale_val(sub, coeff);
+    aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, 1);
+    sub = isl_aff_sub(aff, sub);
+
+    // then construct lower bound constraint from affine expr
+    aff = isl_aff_var_on_domain(ls, isl_dim_set, 1 + dim);
+    aff = isl_aff_sub(aff, sub);
+    c = isl_inequality_from_aff(aff);
+    set = isl_set_add_constraint(set, c);
+
+    map = isl_set_unwrap(set);
     
     data->result = isl_union_map_add_map(data->result, map);
 
     return isl_stat_ok;
 }
 
-static __isl_give isl_union_map* update_expansion(__isl_take isl_union_map *expansion,
-    __isl_take isl_union_set *domain, __isl_take isl_multi_union_pw_aff *mupa,
-    __isl_take isl_multi_val *sizes)
+static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
+    __isl_take isl_union_map *expansion, __isl_take isl_union_set *domain,
+    __isl_take isl_multi_union_pw_aff *mupa, __isl_take isl_multi_val *sizes)
 {
     int dim;
     isl_val *size;
     isl_space *space;
-    isl_union_map *umap, *result;
+    isl_union_map *umap, *result, *dep;
     isl_union_pw_aff *upa;
 
     space = isl_union_map_get_space(expansion);
@@ -284,18 +396,24 @@ static __isl_give isl_union_map* update_expansion(__isl_take isl_union_map *expa
     //todo: multiple overlapped cases
     upa = isl_multi_union_pw_aff_get_union_pw_aff(mupa, 1);
     isl_multi_union_pw_aff_free(mupa);
-    size = isl_multi_val_get_val(sizes, 1);
-    isl_multi_val_free(sizes);
+    //size = isl_multi_val_get_val(sizes, 1);
+    //isl_multi_val_free(sizes);
 
-    data.expansion = construct_starting_point(data.expansion, upa, isl_val_copy(size));
+    data.expansion = construct_starting_point(data.expansion, upa, isl_multi_val_copy(sizes));
+    //isl_val_free(size);
 
     space = isl_union_map_get_space(data.expansion);
     umap = isl_union_map_empty(space);
+    dep = isl_union_map_copy(scop->dep_flow);
+    dep = isl_union_map_coalesce(dep);
+    dep = isl_union_map_gist_domain(dep, isl_union_set_copy(domain));
+    dep = isl_union_map_gist_range(dep, isl_union_set_copy(domain));
 
-    struct overlapped_data overlap = { data.expansion, umap, size };
+    struct overlapped_data overlap = { data.expansion, umap, dep, sizes };
     isl_union_map_foreach_map(overlap.expansion, &construct_overlapped_cond, &overlap);
-    isl_val_free(overlap.size);
+    isl_multi_val_free(overlap.sizes);
     isl_union_map_free(overlap.expansion);
+    isl_union_map_free(overlap.dep);
 
     return overlap.result;
 }
@@ -330,7 +448,7 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     // construct the expansion
     universe = isl_union_set_universe(isl_union_set_copy(domain));
     expansion = isl_union_set_identity(universe);
-    expansion = update_expansion(expansion, domain, mupa, sizes);
+    expansion = update_expansion(scop, expansion, domain, mupa, sizes);
     //printf("after updata_expansion\n");
     //isl_union_map_dump(expansion);
     
