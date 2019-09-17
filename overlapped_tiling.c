@@ -418,12 +418,109 @@ static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
     return overlap.result;
 }
 
+struct dim_size_data {
+    isl_set *domain;
+    isl_pw_aff *pa;
+};
+
+static isl_stat get_pw_aff_from_domain(__isl_take isl_pw_aff *pa, void *user) {
+    isl_set *domain;
+    isl_bool empty;
+    struct dim_size_data *data = user;
+
+    domain = isl_pw_aff_domain(isl_pw_aff_copy(pa));
+    domain = isl_set_intersect(domain, isl_set_copy(data->domain));
+    empty = isl_set_is_empty(domain);
+    isl_set_free(domain);
+    if (!empty)
+        data->pa = pa;
+    else
+        isl_pw_aff_free(pa);
+
+    return isl_stat_ok;
+}
+
+/* Obtain the space dimension size of input "domain". This size
+ * should be compared with parallelogram tiling size. In case
+ * the parallelogram tiling size is greater than this size,
+ * overlapped tiling should not be applied.  
+ */
+static int obtain_space_dim_size(__isl_take isl_set *domain,
+    __isl_take isl_multi_union_pw_aff *mupa, int dim)
+{
+	int i, n, bound;
+    isl_aff *aff;
+    isl_ctx *ctx;
+	isl_val *ub, *lb, *val;
+	isl_set *dom, *points;
+	isl_point *max, *min;
+    isl_pw_aff *pa;
+    isl_val_list *clist;
+    isl_union_pw_aff *upa;
+
+	if(!domain)
+		return -1;
+
+    n = isl_multi_union_pw_aff_dim(mupa, isl_dim_out);
+    //todo: check n > dim
+    upa = isl_multi_union_pw_aff_get_union_pw_aff(mupa, dim);
+    isl_multi_union_pw_aff_free(mupa);
+
+    struct dim_size_data data = { domain, pa};
+    isl_union_pw_aff_foreach_pw_aff(upa, &get_pw_aff_from_domain, &data);
+    isl_union_pw_aff_free(upa);
+    isl_pw_aff_foreach_piece(data.pa, &extract_single_piece, &aff);
+    isl_pw_aff_free(data.pa);
+    
+    ctx = isl_aff_get_ctx(aff);
+    clist = isl_val_list_alloc(ctx, dim + 2);
+    for (i = 0; i <= dim; i++) {
+        val = isl_aff_get_coefficient_val(aff, isl_dim_in, i);
+        clist = isl_val_list_add(clist, val);
+    }
+    val = isl_aff_get_constant_val(aff);
+    clist = isl_val_list_add(clist, val);
+    isl_aff_free(aff);
+
+    bound = 0;
+    for (i = 0; i <= dim; i++) {
+        points = isl_set_lexmax(isl_set_copy(domain));
+        max = isl_set_sample_point(points);
+        ub = isl_point_get_coordinate_val(max, isl_dim_set, i);
+
+        points = isl_set_lexmin(isl_set_copy(domain));
+        min = isl_set_sample_point(points);
+        lb = isl_point_get_coordinate_val(min, isl_dim_set, i);
+
+        val = isl_val_sub(ub, lb);
+        val = isl_val_mul(val, isl_val_list_get_val(clist, i));
+        bound += isl_val_get_num_si(val);
+        isl_val_free(val);
+        isl_point_free(max);
+        isl_point_free(min);
+    }
+    val = isl_val_list_get_val(clist, i);
+    bound += isl_val_get_num_si(val);
+    
+    isl_val_free(val);
+    isl_set_free(domain);
+    isl_val_list_free(clist);
+
+	if(!bound)
+		return INT32_MAX;
+
+	return bound + 1;
+}
+
 __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node,
 		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes)
 {
     int i, j, k, n;
-    int shift;
+    int shift, dim ,bound, overlapped;
     isl_ctx *ctx;
+    isl_set *set;
+    isl_val *val, *size;
+    isl_set_list *list;
     isl_union_set *domain, *empty, *universe;
     isl_union_map *expansion;
     isl_schedule_node *child;
@@ -432,9 +529,36 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
 
     // obtain original mupa
     mupa = isl_schedule_node_band_get_partial_schedule(node);
+
+    // apply parallelogram tiling if tile size is greater than space extent
+    overlapped = 1;
+    ctx = isl_schedule_node_get_ctx(node);
+    domain = isl_schedule_node_get_domain(node);
+    list = isl_union_set_get_set_list(domain);
+    isl_union_set_free(domain);
+    n = isl_set_list_n_set(list);
+    for (i = 0; i < n; i++) {
+        set = isl_set_list_get_set(list, i);
+        dim = isl_set_n_dim(set);
+        //todo: check dim >= 2
+        bound = obtain_space_dim_size(set, isl_multi_union_pw_aff_copy(mupa), 1);
+        val = isl_val_int_from_si(ctx, bound);
+        size = isl_multi_val_get_val(sizes, 1);
+        if(isl_val_ge(size, val)) {
+            overlapped = 0;
+            break;
+        }
+    }
+    isl_val_free(val);
+    isl_val_free(size);
+    isl_set_list_free(list);
+
+    if(!overlapped) {
+        isl_multi_union_pw_aff_free(mupa);
+        return isl_schedule_node_band_tile(node, sizes);
+    }
     
     // apply parallelogram tiling without shifting point loops
-    ctx = isl_schedule_node_get_ctx(node);
     shift = isl_options_get_tile_shift_point_loops(ctx);
     isl_options_set_tile_shift_point_loops(ctx, 0);
 	node = isl_schedule_node_band_tile(node, isl_multi_val_copy(sizes));
