@@ -127,6 +127,7 @@ static isl_stat extract_single_piece(__isl_take isl_set *set,
 
 static isl_stat starting_point_cond(__isl_take isl_pw_aff *pa, void *user) {
     int i, j, m, n;
+    const char *pw_name, *map_name;
     isl_ctx *ctx;
     isl_aff *aff, *copy, *var;
     isl_map *map;
@@ -140,7 +141,9 @@ static isl_stat starting_point_cond(__isl_take isl_pw_aff *pa, void *user) {
     struct starting_point_data *data = user;
 
     isl_pw_aff_foreach_piece(pa, &extract_single_piece, &aff);
-    isl_pw_aff_free(pa);
+    set = isl_pw_aff_domain(pa);
+    pw_name = isl_set_get_tuple_name(set);
+    isl_set_free(set);
     
     n = isl_aff_dim(aff, isl_dim_in);
     ctx = isl_aff_get_ctx(aff);
@@ -157,6 +160,11 @@ static isl_stat starting_point_cond(__isl_take isl_pw_aff *pa, void *user) {
     m = isl_map_list_n_map(mlist);
     for (i = 0; i < m; i++) {
         map = isl_map_list_get_map(mlist, i);
+        map_name = isl_map_get_tuple_name(map, isl_dim_in);
+        if (map_name != pw_name) {
+            isl_map_free(map);
+            continue;
+        }
         set = isl_map_wrap(map);
         //todo: n?
         for (j = 0; j < n + 1; j++) {
@@ -184,9 +192,10 @@ static isl_stat starting_point_cond(__isl_take isl_pw_aff *pa, void *user) {
         set = isl_set_add_constraint(set, c);
         map = isl_set_unwrap(set);
         data->result = isl_union_map_add_map(data->result, isl_map_copy(map));
+
+        isl_set_free(set);
     }
 
-    isl_set_free(set);
     isl_val_list_free(list);
     isl_map_list_free(mlist);
 
@@ -272,8 +281,8 @@ struct overlapped_data {
 
 static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
     int i, dim;
+    const char *map_name, *dep_name;
     isl_aff *aff, *sub;
-    isl_bool empty;
     isl_ctx *ctx;
     isl_map *candidate;
     isl_set *set, *domain;
@@ -310,24 +319,23 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
     map = isl_set_unwrap(set);
 
     // compute coefficient for lower bounds
+    map_name = isl_map_get_tuple_name(map, isl_dim_in);
     list = isl_union_map_get_map_list(data->dep);
     for (i = 0; i < isl_map_list_n_map(list); i++) {
-        candidate = isl_map_copy(isl_map_list_get_map(list, i));
+        candidate = isl_map_list_get_map(list, i);
         domain = isl_map_domain(candidate);
-        domain = isl_set_intersect(domain, isl_map_domain(isl_map_copy(map)));
-        empty = isl_set_is_empty(domain);
+        dep_name = isl_set_get_tuple_name(domain);
         isl_set_free(domain);
-        if(empty)
-            continue;
-        else
+        if(map_name == dep_name)
             break;
+        else
+            continue;
     }
     isl_map_list_free(list);
 
     ctx = isl_union_map_get_ctx(data->dep);
     vlist = isl_val_list_alloc(ctx, 2);
     isl_map_foreach_basic_map(candidate, &obtain_maxmin_in_bmap, &vlist);
-    isl_map_free(candidate);
 
     coeff = isl_val_list_get_val(vlist, 0);
     coeff = isl_val_sub(coeff, isl_val_list_get_val(vlist, 1));
@@ -340,7 +348,6 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
     
     // first construct time dim affine expr
     aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, 0);
-    //todo: correct size
     val = isl_multi_val_get_val(data->sizes, 0);
     sub = isl_aff_scale_down_val(isl_aff_copy(aff), isl_val_copy(val));
     sub = isl_aff_floor(sub);
@@ -396,11 +403,8 @@ static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
     //todo: multiple overlapped cases
     upa = isl_multi_union_pw_aff_get_union_pw_aff(mupa, 1);
     isl_multi_union_pw_aff_free(mupa);
-    //size = isl_multi_val_get_val(sizes, 1);
-    //isl_multi_val_free(sizes);
 
     data.expansion = construct_starting_point(data.expansion, upa, isl_multi_val_copy(sizes));
-    //isl_val_free(size);
 
     space = isl_union_map_get_space(data.expansion);
     umap = isl_union_map_empty(space);
@@ -424,15 +428,16 @@ struct dim_size_data {
 };
 
 static isl_stat get_pw_aff_from_domain(__isl_take isl_pw_aff *pa, void *user) {
+    const char *pa_name, *dom_name;
     isl_set *domain;
-    isl_bool empty;
     struct dim_size_data *data = user;
 
+    dom_name = isl_set_get_tuple_name(data->domain);
     domain = isl_pw_aff_domain(isl_pw_aff_copy(pa));
-    domain = isl_set_intersect(domain, isl_set_copy(data->domain));
-    empty = isl_set_is_empty(domain);
+    pa_name = isl_set_get_tuple_name(domain);
     isl_set_free(domain);
-    if (!empty)
+
+    if (dom_name == pa_name)
         data->pa = pa;
     else
         isl_pw_aff_free(pa);
@@ -546,11 +551,15 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
         size = isl_multi_val_get_val(sizes, 1);
         if(isl_val_ge(size, val)) {
             overlapped = 0;
+            isl_val_free(val);
+            isl_val_free(size);
             break;
         }
+        else {
+            isl_val_free(val);
+            isl_val_free(size);
+        }
     }
-    isl_val_free(val);
-    isl_val_free(size);
     isl_set_list_free(list);
 
     if(!overlapped) {
@@ -573,6 +582,9 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     universe = isl_union_set_universe(isl_union_set_copy(domain));
     expansion = isl_union_set_identity(universe);
     expansion = update_expansion(scop, expansion, domain, mupa, sizes);
+    //isl_union_set_free(domain);
+    //isl_multi_val_free(sizes);
+    //isl_multi_union_pw_aff_free(mupa);
     //printf("after updata_expansion\n");
     //isl_union_map_dump(expansion);
     
