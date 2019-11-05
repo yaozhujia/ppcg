@@ -22,18 +22,6 @@ If you are using an older version of ubuntu, then you need to compile and
 install LLVM/clang from source.
 
 
-Preparing:
-
-Grab the latest release and extract it or get the source from
-the git repository as follows.  This process requires autoconf,
-automake, libtool and pkg-config.
-
-	git clone git://repo.or.cz/ppcg.git
-	cd ppcg
-	./get_submodules.sh
-	./autogen.sh
-
-
 Compilation:
 
 	./configure
