@@ -4155,6 +4155,91 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 	return node;
 }
 
+struct ppcg_mark_outer_data {
+	struct gpu_gen *gen;
+	struct ppcg_scop *scop;
+};
+
+static __isl_give isl_union_map *partialSchedule(__isl_keep isl_schedule_node *node, isl_bool useNode)
+{
+    int n = isl_schedule_node_get_tree_depth(node);
+    int N_ = n;
+    if (useNode == isl_bool_true) ++N_;
+    isl_schedule_node *tmp_node;
+    isl_union_map *schedule = isl_union_map_from_domain(isl_schedule_node_get_domain(node));
+    for (int i = 0; i < N_; ++i) {
+        tmp_node = isl_schedule_node_ancestor(isl_schedule_node_copy(node), (n - i));
+        if (isl_schedule_node_get_type(tmp_node) == isl_schedule_node_band) {
+            if (isl_schedule_node_band_n_member(tmp_node) > 0) {
+                schedule = isl_union_map_flat_range_product(schedule, isl_schedule_node_band_get_partial_schedule_union_map(tmp_node));
+            }
+        } else if (isl_schedule_node_get_type(tmp_node) == isl_schedule_node_filter) {
+            schedule = isl_union_map_intersect_domain(schedule, isl_schedule_node_filter_get_filter(tmp_node));
+        } else if (isl_schedule_node_get_type(tmp_node) == isl_schedule_node_extension) {
+            isl_union_map *umap2 = isl_schedule_node_extension_get_extension(tmp_node);
+            umap2 = isl_union_map_reverse(umap2);
+            umap2 = isl_union_map_intersect_range(umap2, isl_union_map_range(isl_union_map_copy(schedule)));
+            schedule = isl_union_map_union(schedule, umap2);
+        }
+        isl_schedule_node_free(tmp_node);
+    }
+    return schedule;
+}
+
+static __isl_give isl_union_map *computeDependences(__isl_keep isl_union_map *sources,
+    __isl_keep isl_union_map *sinks, __isl_keep isl_schedule *sch) {
+
+    isl_union_access_info *access;
+    access = isl_union_access_info_from_sink(isl_union_map_copy(sinks));
+
+    /* set kill */
+	access = isl_union_access_info_set_kill(access, isl_union_map_copy(sources));
+
+	/* set may source */
+	access = isl_union_access_info_set_may_source(access, isl_union_map_copy(sources));
+
+	/* set schedule */
+	access = isl_union_access_info_set_schedule(access,	isl_schedule_copy(sch));
+
+	/* compute */
+	isl_union_flow *flow = isl_union_access_info_compute_flow(access);
+
+	isl_union_map *dependence = isl_union_flow_get_may_dependence(flow);
+
+	isl_union_flow_free(flow);
+
+	return dependence;
+}
+
+static __isl_give isl_schedule_node *insert_stmt_extension(__isl_take isl_schedule_node *node,
+    isl_map *read, struct ppcg_scop *scop) {
+
+    isl_union_map *reads = isl_union_map_from_map(read);
+    isl_union_map *writes = isl_union_map_intersect_range(isl_union_map_copy(scop->may_writes),
+        isl_union_map_range(isl_union_map_copy(reads)));
+    isl_union_map *dependences = computeDependences(writes, reads, scop->schedule);
+
+    isl_union_set *stmt = isl_union_map_domain(dependences);
+    stmt = isl_union_set_universe(isl_union_map_domain(dependences));
+    writes = isl_union_map_intersect_domain(writes, stmt);
+    writes = isl_union_map_reverse(writes);
+    writes = isl_union_map_polyhedral_hull(writes);
+    isl_union_map *stmtExt = isl_union_map_apply_range(reads, writes);
+    stmtExt = isl_union_map_polyhedral_hull(stmtExt);
+    isl_map *stmt_extension = isl_map_from_union_map(stmtExt);
+
+    isl_space *stmt_space = isl_map_get_space(stmt_extension);
+    stmt_space = isl_space_range(stmt_space);
+    stmt_space = isl_space_map_from_set(stmt_space);
+
+    isl_multi_aff *identity_schedule = isl_multi_aff_identity(stmt_space);
+    isl_multi_union_pw_aff *stmt_schedule = isl_multi_union_pw_aff_from_multi_aff(identity_schedule);
+
+
+    return node;
+    //isl_schedule_node_insert_partial_schedule(__isl_take isl_schedule_node * node,__isl_take isl_multi_union_pw_aff * mupa)
+}
+
 /* If "node" is the outermost permutable band that can be mapped to block and
  * thread identifiers in its branch (or the root of a subtree with
  * no such outer bands),
@@ -4181,13 +4266,17 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 static __isl_give isl_schedule_node *mark_outer_permutable(
 	__isl_take isl_schedule_node *node, void *user)
 {
-	struct gpu_gen *gen = user;
+    struct ppcg_mark_outer_data *user_data = user;
+
+	struct gpu_gen *gen = user_data->gen;
+	struct ppcg_scop *scop = user_data->scop;
 	int outer;
 	int scale;
 	int tile_len;
 	int *tile_size;
 	isl_id *id;
 	isl_multi_val *sizes;
+	isl_bool may_transfer = isl_bool_false;
 
 	outer = is_outer_tilable(node);
 	if (outer < 0)
@@ -4203,8 +4292,31 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 			return node;
 	}
 
+    if (isl_schedule_node_get_type(node) == isl_schedule_node_band) {
+        isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
+        if (isl_schedule_node_get_type(parent) == isl_schedule_node_filter) {
+            isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
+            isl_schedule_node_free(parent);
+            if (filter) {
+                isl_union_map *live_out = isl_union_map_intersect_domain(isl_union_map_copy(scop->live_out), filter);
+                if (isl_union_map_is_empty(live_out)) {
+                    isl_id *mark = isl_id_alloc(gen->ctx, "skipped", NULL);
+                    node = isl_schedule_node_insert_mark(node, mark);
+                    isl_union_map_free(live_out);
+                    return node;
+                } else {
+                    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "maybe need transfer statement!");
+                    may_transfer = isl_bool_true;
+                    isl_union_map_free(live_out);
+                }
+            }
+        } else {
+            isl_schedule_node_free(parent);
+        }
+    }
+
 	//TODO: check stencil_partern before scheduling
-	int stencil_partern = 1;
+	int stencil_partern = 0;
 	if(stencil_partern && gen->options->split_tile)
 		return try_split_tile(gen, node);
 
@@ -4219,7 +4331,32 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 	if (tile_len < isl_schedule_node_band_n_member(node))
 		node = isl_schedule_node_band_split(node, tile_len);
 	sizes = construct_band_tiles_sizes(node, tile_size);
+
 	node = tile_band(node, isl_multi_val_copy(sizes));
+	printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule tree after tiled band: ");
+	isl_schedule_node_dump(node);
+
+    if (may_transfer == isl_bool_true) {
+        isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
+        isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
+        isl_schedule_node_free(parent);
+        isl_union_map *fake_livein = isl_union_map_intersect_domain(isl_union_map_copy(scop->fake_livein), filter);
+        isl_union_map *schedule = partialSchedule(node, isl_bool_true);
+        isl_union_map *scopedAccess = isl_union_map_apply_domain(fake_livein, schedule);
+        isl_union_map_free(scopedAccess);
+        #if 0
+        if (isl_union_map_is_empty(scopedAccess) != isl_bool_true) {
+            isl_map_list *read_list = isl_union_map_get_map_list(scopedAccess);
+            int n = isl_map_list_size(read_list);
+            for (int i = 0; i < n; ++i) {
+                isl_map *read = isl_map_list_get_at(read_list, i);
+                isl_map_free(read);
+                //node = insert_stmt_extension(node, read, scop);
+            }
+        }
+        #endif
+    }
+
 	node = isl_schedule_node_child(node, 0);
 	if (gen->options->unroll_gpu_tile)
 		node = ppcg_set_schedule_node_type(node, isl_ast_loop_unroll);
@@ -4420,10 +4557,13 @@ static __isl_give isl_union_map *approximate_copy_out(
  * have at least one parallel loop.
  */
 static __isl_give isl_schedule_node *mark_kernels(struct gpu_gen *gen,
-	__isl_take isl_schedule_node *node)
+	__isl_take isl_schedule_node *node, struct ppcg_scop *scop)
 {
+    struct ppcg_mark_outer_data user;
+    user.gen = gen;
+    user.scop = scop;
 	return isl_schedule_node_map_descendant_bottom_up(node,
-						&mark_outer_permutable, gen);
+						&mark_outer_permutable, (void *)(&user));
 }
 
 /* Construct schedule constraints from the dependences in prog->scop and
@@ -5356,6 +5496,115 @@ static __isl_give isl_schedule_node *add_init_clear_device(
 	return node;
 }
 
+static void dump_scop(struct ppcg_scop *scop)
+{
+    if (!scop)
+		printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "scop is null!");
+
+	if (scop->live_in) {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_in: ");
+		isl_union_map_dump(scop->live_in);
+	} else {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_in: null");
+	}
+
+	if (scop->fake_livein) {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "fake_livein: ");
+		isl_union_map_dump(scop->fake_livein);
+	} else {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "fake_livein: null");
+	}
+
+	if (scop->live_out) {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_out: ");
+		isl_union_map_dump(scop->live_out);
+	} else {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_out: null");
+	}
+
+	if (scop->schedule) {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule: ");
+		isl_schedule_dump(scop->schedule);
+	} else {
+	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule: null");
+	}
+}
+
+static void compute_filter_livein(struct ppcg_scop *ps, __isl_keep isl_schedule_node *node)
+{
+	isl_union_access_info *access;
+	isl_union_flow *flow;
+	isl_union_map *kills;
+	isl_union_set *filter;
+
+    isl_union_map *reads, *must_kills, *must_writes, *may_writes;
+    isl_union_map *livein;
+
+	if (isl_schedule_node_filter != isl_schedule_node_get_type(node))
+	    return;
+
+	filter = isl_schedule_node_filter_get_filter(node);
+    if (!filter) return;
+
+    reads = isl_union_map_intersect_domain(isl_union_map_copy(ps->reads),
+                isl_union_set_copy(filter));
+    must_kills = isl_union_map_intersect_domain(isl_union_map_copy(ps->must_kills),
+                     isl_union_set_copy(filter));
+    must_writes = isl_union_map_intersect_domain(isl_union_map_copy(ps->must_writes),
+                      isl_union_set_copy(filter));
+    may_writes = isl_union_map_intersect_domain(isl_union_map_copy(ps->may_writes), filter);
+
+	access = isl_union_access_info_from_sink(isl_union_map_copy(reads));
+
+    /* set kill */
+	kills = isl_union_map_union(must_kills, must_writes);
+	access = isl_union_access_info_set_kill(access, kills);
+
+	/* set may source */
+	access = isl_union_access_info_set_may_source(access, may_writes);
+
+	/* set schedule */
+	access = isl_union_access_info_set_schedule(access,
+				isl_schedule_copy(ps->schedule));
+
+	/* compute */
+	flow = isl_union_access_info_compute_flow(access);
+	livein = isl_union_flow_get_may_no_source(flow);
+	isl_union_flow_free(flow);
+
+	livein = isl_union_map_intersect_range(reads, isl_union_map_range(livein));
+
+	if (!livein) return;
+    if (ps->fake_livein)
+        ps->fake_livein = isl_union_map_union(ps->fake_livein, livein);
+    else
+        ps->fake_livein = livein;
+	return;
+}
+
+
+static void compute_fake_livein(struct ppcg_scop *ps, __isl_keep isl_schedule_node *node)
+{
+    if ((isl_schedule_node_sequence != isl_schedule_node_get_type(node))
+		&& (isl_schedule_node_sequence != isl_schedule_node_get_type(node)))
+    {
+        return;
+    }
+
+    isl_size n = isl_schedule_node_n_children(node);
+    for ( int i = 0; i < n; i++ )
+    {
+        node = isl_schedule_node_child(node, i);
+        compute_filter_livein(ps, node);
+        node = isl_schedule_node_parent(node);
+    }
+
+    if (ps->fake_livein)
+    {
+        ps->fake_livein = isl_union_map_subtract(ps->fake_livein, isl_union_map_copy(ps->live_in));
+	}
+}
+
 /* Update "schedule" for mapping to a GPU device.
  *
  * In particular, insert a context node, create kernels for
@@ -5371,7 +5620,7 @@ static __isl_give isl_schedule_node *add_init_clear_device(
  * around the entire schedule.
  */
 static __isl_give isl_schedule *map_to_device(struct gpu_gen *gen,
-	__isl_take isl_schedule *schedule)
+	__isl_take isl_schedule *schedule, struct ppcg_scop *scop)
 {
 	isl_schedule_node *node;
 	isl_set *context;
@@ -5402,7 +5651,18 @@ static __isl_give isl_schedule *map_to_device(struct gpu_gen *gen,
 	prefix = isl_schedule_node_get_prefix_schedule_union_map(node);
 	prefix = isl_union_map_preimage_domain_union_pw_multi_aff(prefix,
 				    contraction);
-	node = mark_kernels(gen, node);
+
+	compute_fake_livein(scop, node);
+	dump_scop(scop);
+
+	//printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "before mark kernels: ");
+	//isl_schedule_node_dump(node);
+
+	node = mark_kernels(gen, node, scop);
+
+	printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "after mark kernels: ");
+	isl_schedule_node_dump(node);
+
 	node = add_to_from_device(node, domain, prefix, gen->prog);
 	node = isl_schedule_node_root(node);
 	node = isl_schedule_node_child(node, 0);
@@ -5796,7 +6056,7 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 	schedule = get_schedule(gen);
 
 	//TODO: handle more complex cases or check stencil partern
-	int stencil_partern = 1;
+	int stencil_partern = 0;
 	if(stencil_partern)
 		schedule = force_coincidents(schedule);
 
@@ -5808,7 +6068,7 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 			p = print_cpu(p, scop, options);
 		isl_schedule_free(schedule);
 	} else {
-		schedule = map_to_device(gen, schedule);
+		schedule = map_to_device(gen, schedule, scop);
 		gen->tree = generate_code(gen, schedule);
 		p = ppcg_set_macro_names(p);
 		p = ppcg_print_exposed_declarations(p, prog->scop);
@@ -5822,13 +6082,14 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 	return p;
 }
 
+
+
 /* Wrapper around generate for use as a ppcg_transform callback.
  */
 static __isl_give isl_printer *generate_wrap(__isl_take isl_printer *p,
 	struct ppcg_scop *scop, void *user)
 {
 	struct gpu_gen *gen = user;
-
 	return generate(p, gen, scop, gen->options);
 }
 

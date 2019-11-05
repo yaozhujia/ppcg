@@ -83,6 +83,7 @@ struct ppcg_scop {
 	isl_union_map *tagged_reads;
 	isl_union_map *reads;
 	isl_union_map *live_in;
+	isl_union_map *fake_livein;
 	isl_union_map *tagged_may_writes;
 	isl_union_map *may_writes;
 	isl_union_map *tagged_must_writes;

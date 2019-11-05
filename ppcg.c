@@ -845,6 +845,7 @@ static void *ppcg_scop_free(struct ppcg_scop *ps)
 	isl_union_map_free(ps->tagged_reads);
 	isl_union_map_free(ps->reads);
 	isl_union_map_free(ps->live_in);
+	isl_union_map_free(ps->fake_livein);
 	isl_union_map_free(ps->tagged_may_writes);
 	isl_union_map_free(ps->tagged_must_writes);
 	isl_union_map_free(ps->may_writes);
