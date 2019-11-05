@@ -4333,8 +4333,8 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 	sizes = construct_band_tiles_sizes(node, tile_size);
 
 	node = tile_band(node, isl_multi_val_copy(sizes));
-	printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule tree after tiled band: ");
-	isl_schedule_node_dump(node);
+	//printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule tree after tiled band: ");
+	//isl_schedule_node_dump(node);
 
     if (may_transfer == isl_bool_true) {
         isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
@@ -5653,7 +5653,7 @@ static __isl_give isl_schedule *map_to_device(struct gpu_gen *gen,
 				    contraction);
 
 	compute_fake_livein(scop, node);
-	dump_scop(scop);
+	//dump_scop(scop);
 
 	//printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "before mark kernels: ");
 	//isl_schedule_node_dump(node);
