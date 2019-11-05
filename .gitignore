@@ -18,7 +18,6 @@ libtool
 ppcg
 opencl_test.sh
 polybench_test.sh
-
 isl/bound_test.sh
 isl/codegen_test.sh
 isl/flow_test.sh

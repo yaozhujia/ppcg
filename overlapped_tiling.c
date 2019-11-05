@@ -20,7 +20,6 @@
 
 #include "ppcg.h"
 #include "ppcg_options.h"
-#include "isl_schedule_node_private.h"
 #include "overlapped_tiling.h"
 #include "util.h"
 
