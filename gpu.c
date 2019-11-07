@@ -4212,20 +4212,35 @@ static __isl_give isl_union_map *computeDependences(__isl_keep isl_union_map *so
 }
 
 static __isl_give isl_schedule_node *insert_stmt_extension(__isl_take isl_schedule_node *node,
-    isl_map *read, struct ppcg_scop *scop) {
+    __isl_take isl_union_map *reads, __isl_take isl_union_map *scoped_reads, struct ppcg_scop *scop) {
 
-    isl_union_map *reads = isl_union_map_from_map(read);
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "reads: ");
+    isl_union_map_dump(reads);
+
     isl_union_map *writes = isl_union_map_intersect_range(isl_union_map_copy(scop->may_writes),
         isl_union_map_range(isl_union_map_copy(reads)));
+
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "writes: ");
+    isl_union_map_dump(writes);
+
     isl_union_map *dependences = computeDependences(writes, reads, scop->schedule);
+    isl_union_map_free(reads);
+
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "dependences: ");
+    isl_union_map_dump(dependences);
 
     isl_union_set *stmt = isl_union_map_domain(dependences);
-    stmt = isl_union_set_universe(isl_union_map_domain(dependences));
-    writes = isl_union_map_intersect_domain(writes, stmt);
+    stmt = isl_union_set_universe(stmt);
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt: ");
+    isl_union_set_dump(stmt);
+
+    writes = isl_union_map_intersect_domain(writes, isl_union_set_copy(stmt));
     writes = isl_union_map_reverse(writes);
     writes = isl_union_map_polyhedral_hull(writes);
-    isl_union_map *stmtExt = isl_union_map_apply_range(reads, writes);
+    isl_union_map *stmtExt = isl_union_map_apply_range(scoped_reads, writes);
     stmtExt = isl_union_map_polyhedral_hull(stmtExt);
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmtExt: ");
+    isl_union_map_dump(stmtExt);
     isl_map *stmt_extension = isl_map_from_union_map(stmtExt);
 
     isl_space *stmt_space = isl_map_get_space(stmt_extension);
@@ -4235,6 +4250,18 @@ static __isl_give isl_schedule_node *insert_stmt_extension(__isl_take isl_schedu
     isl_multi_aff *identity_schedule = isl_multi_aff_identity(stmt_space);
     isl_multi_union_pw_aff *stmt_schedule = isl_multi_union_pw_aff_from_multi_aff(identity_schedule);
 
+    /* insert extension */
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt_extension: ");
+    isl_map_dump(stmt_extension);
+
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt_schedule: ");
+    isl_multi_union_pw_aff_dump(stmt_schedule);
+
+    isl_map_free(stmt_extension);
+    isl_multi_union_pw_aff_free(stmt_schedule);
+
+    /* next */
+    isl_union_set_free(stmt);
 
     return node;
     //isl_schedule_node_insert_partial_schedule(__isl_take isl_schedule_node * node,__isl_take isl_multi_union_pw_aff * mupa)
@@ -4341,20 +4368,26 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
         isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
         isl_schedule_node_free(parent);
         isl_union_map *fake_livein = isl_union_map_intersect_domain(isl_union_map_copy(scop->fake_livein), filter);
-        isl_union_map *schedule = partialSchedule(node, isl_bool_true);
-        isl_union_map *scopedAccess = isl_union_map_apply_domain(fake_livein, schedule);
-        isl_union_map_free(scopedAccess);
-        #if 0
-        if (isl_union_map_is_empty(scopedAccess) != isl_bool_true) {
-            isl_map_list *read_list = isl_union_map_get_map_list(scopedAccess);
-            int n = isl_map_list_size(read_list);
+
+        if (isl_union_map_is_empty(fake_livein) != isl_bool_true) {
+            isl_union_map *schedule = partialSchedule(node, isl_bool_true);
+            isl_union_set *tensors = isl_union_map_range(isl_union_map_copy(fake_livein));
+            tensors = isl_union_set_universe(tensors);
+            isl_set_list *tensor_list = isl_union_set_get_set_list(tensors);
+            int n = isl_set_list_size(tensor_list);
             for (int i = 0; i < n; ++i) {
-                isl_map *read = isl_map_list_get_at(read_list, i);
-                isl_map_free(read);
-                //node = insert_stmt_extension(node, read, scop);
+                isl_set *tensor = isl_set_list_get_at(tensor_list, i);
+                isl_union_map *reads = isl_union_map_intersect_range(isl_union_map_copy(fake_livein),
+                                           isl_union_set_from_set(tensor));
+                isl_union_map *scopedAccess = isl_union_map_apply_domain(isl_union_map_copy(reads),
+                                                  isl_union_map_copy(schedule));
+                node = insert_stmt_extension(node, reads, scopedAccess, scop);
             }
+            isl_set_list_free(tensor_list);
+            isl_union_set_free(tensors);
+            isl_union_map_free(schedule);
+            isl_union_map_free(fake_livein);
         }
-        #endif
     }
 
 	node = isl_schedule_node_child(node, 0);
