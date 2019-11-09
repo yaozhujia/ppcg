@@ -4215,18 +4215,10 @@ static __isl_give isl_schedule_node *insert_extension_before_or_after(
     __isl_take isl_schedule_node *node, __isl_take isl_union_map *extension,
     __isl_take isl_multi_union_pw_aff *mupa, isl_bool before) {
 
-    if (isl_schedule_node_get_type(node) == isl_schedule_node_filter) {
-        isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
-        if (isl_schedule_node_get_type(parent) == isl_schedule_node_sequence) {
-            isl_schedule_node_free(node);
-            node = parent;
-        } else {
-            isl_schedule_node_free(parent);
-        }
-    }
-
+    isl_bool is_extension = isl_bool_false;
     if (isl_schedule_node_get_type(node) == isl_schedule_node_extension) {
         node = isl_schedule_node_child(node, 0);
+        is_extension = isl_bool_true;
     }
 
     if (isl_schedule_node_get_type(node) != isl_schedule_node_sequence) {
@@ -4241,8 +4233,17 @@ static __isl_give isl_schedule_node *insert_extension_before_or_after(
         graft = isl_schedule_node_insert_partial_schedule(graft, mupa);
         graft = isl_schedule_node_parent(graft);
         if (isl_bool_true == before) {
+            if (isl_bool_true == is_extension) {
+                node = isl_schedule_node_child(node, 0);
+                node = isl_schedule_node_child(node, 0);
+            }
             node = isl_schedule_node_graft_before(node, graft);
         } else {
+            if (isl_bool_true == is_extension) {
+                int n = isl_schedule_node_n_children(node);
+                node = isl_schedule_node_child(node, (n-1));
+                node = isl_schedule_node_child(node, 0);
+            }
             node = isl_schedule_node_graft_after(node, graft);
         }
         while (isl_schedule_node_get_type(node) != isl_schedule_node_extension) {
@@ -4284,27 +4285,52 @@ static __isl_give isl_schedule_node *insert_stmt_extension(__isl_take isl_schedu
     stmtExt = isl_union_map_polyhedral_hull(stmtExt);
     printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmtExt: ");
     isl_union_map_dump(stmtExt);
-    isl_map *stmt_extension = isl_map_from_union_map(stmtExt);
-
-    isl_space *stmt_space = isl_map_get_space(stmt_extension);
-    stmt_space = isl_space_range(stmt_space);
-    stmt_space = isl_space_map_from_set(stmt_space);
-
-    isl_multi_aff *identity_schedule = isl_multi_aff_identity(stmt_space);
-    isl_multi_union_pw_aff *stmt_schedule = isl_multi_union_pw_aff_from_multi_aff(identity_schedule);
 
     /* insert extension */
-    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt_extension: ");
-    isl_map_dump(stmt_extension);
+    isl_map_list *stmt_ext_list = isl_union_map_get_map_list(stmtExt);
+    int num = isl_map_list_size(stmt_ext_list);
+    for (int i = 0; i < num; ++i) {
+        isl_map *stmt_extension = isl_map_list_get_at(stmt_ext_list, i);
+        isl_space *stmt_space = isl_map_get_space(stmt_extension);
+        stmt_space = isl_space_range(stmt_space);
+        stmt_space = isl_space_map_from_set(stmt_space);
 
-    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt_schedule: ");
-    isl_multi_union_pw_aff_dump(stmt_schedule);
+        isl_multi_aff *identity_schedule = isl_multi_aff_identity(stmt_space);
+        isl_multi_union_pw_aff *stmt_schedule = isl_multi_union_pw_aff_from_multi_aff(identity_schedule);
 
-    node = insert_extension_before_or_after(node, isl_union_map_from_map(stmt_extension),
+        printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt_extension: ");
+        isl_map_dump(stmt_extension);
+
+        printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt_schedule: ");
+        isl_multi_union_pw_aff_dump(stmt_schedule);
+
+        node = insert_extension_before_or_after(node, isl_union_map_from_map(stmt_extension),
                stmt_schedule, isl_bool_true);
+    }
+    isl_map_list_free(stmt_ext_list);
 
     /* next */
-    isl_union_set_free(stmt);
+    isl_union_map *stmt_reads = isl_union_map_intersect_domain(
+        isl_union_map_copy(scop->reads), stmt);
+    stmt_reads = isl_union_map_subtract(stmt_reads, isl_union_map_copy(scop->live_in));
+    if (isl_union_map_is_empty(stmt_reads) != isl_bool_true) {
+        isl_union_set *tensors = isl_union_map_range(isl_union_map_copy(stmt_reads));
+        tensors = isl_union_set_universe(tensors);
+        isl_set_list *tensor_list = isl_union_set_get_set_list(tensors);
+        int n = isl_set_list_size(tensor_list);
+        for (int i = 0; i < n; ++i) {
+            isl_set *tensor = isl_set_list_get_at(tensor_list, i);
+            reads = isl_union_map_intersect_range(isl_union_map_copy(stmt_reads),
+                                       isl_union_set_from_set(tensor));
+            isl_union_map *scopedAccess = isl_union_map_apply_range(isl_union_map_copy(stmtExt),
+                                              isl_union_map_copy(stmt_reads));
+            node = insert_stmt_extension(node, reads, scopedAccess, scop);
+        }
+        isl_set_list_free(tensor_list);
+        isl_union_set_free(tensors);
+    }
+    isl_union_map_free(stmt_reads);
+    isl_union_map_free(stmtExt);
 
     return node;
 }
@@ -4346,6 +4372,7 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 	isl_id *id;
 	isl_multi_val *sizes;
 	isl_bool may_transfer = isl_bool_false;
+	isl_bool must_transfer = isl_bool_false;
 
 	outer = is_outer_tilable(node);
 	if (outer < 0)
@@ -4408,8 +4435,9 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
         isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
         isl_schedule_node_free(parent);
         isl_union_map *fake_livein = isl_union_map_intersect_domain(isl_union_map_copy(scop->fake_livein), filter);
-
+        node = isl_schedule_node_child(node, 0);
         if (isl_union_map_is_empty(fake_livein) != isl_bool_true) {
+            must_transfer = isl_bool_true;
             isl_union_map *schedule = partialSchedule(node, isl_bool_true);
             isl_union_set *tensors = isl_union_map_range(isl_union_map_copy(fake_livein));
             tensors = isl_union_set_universe(tensors);
@@ -4436,6 +4464,7 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
             isl_union_map_free(schedule);
             isl_union_map_free(fake_livein);
         }
+        node = isl_schedule_node_parent(node);
     }
 
 	node = isl_schedule_node_child(node, 0);
@@ -4445,7 +4474,11 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 	node = isl_schedule_node_insert_mark(node, id);
 	node = isl_schedule_node_parent(node);
 
-	scale = gen->options->scale_tile_loops;
+    if (must_transfer == isl_bool_true) {
+        scale = 0;
+    } else {
+	    scale = gen->options->scale_tile_loops;
+	}
 	node = gpu_create_kernel(gen, node, scale, sizes);
 	isl_multi_val_free(sizes);
 	free(tile_size);
