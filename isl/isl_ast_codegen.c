@@ -9,6 +9,7 @@
  * and Inria Paris - Rocquencourt, Domaine de Voluceau - Rocquencourt,
  * B.P. 105 - 78153 Le Chesnay, France
  */
+#include <string.h>
 
 #include <limits.h>
 #include <isl/id.h>
@@ -5643,6 +5644,11 @@ static __isl_give isl_ast_graft_list *build_ast_from_mark(
 	list = build_ast_from_child(isl_ast_build_copy(build), node, executed);
 	list = isl_ast_graft_list_fuse(list, build);
 	n = isl_ast_graft_list_n_ast_graft(list);
+	//added to skip substree under a "skipped" mark node
+	if(!strcmp(isl_id_get_name(mark), "skipped")){
+		list = isl_ast_graft_list_drop(list, 0, n);
+		n = isl_ast_graft_list_n_ast_graft(list);
+	}
 	if (n < 0)
 		list = isl_ast_graft_list_free(list);
 	if (n == 0) {
