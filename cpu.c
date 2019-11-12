@@ -672,6 +672,29 @@ static __isl_give isl_schedule_node *insert_stmt_extension(__isl_take isl_schedu
     printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "dependences: ");
     isl_union_map_dump(dependences);
 
+    /* delete self-dependence */
+    isl_map_list *dependences_list = isl_union_map_get_map_list(dependences);
+    int nn = isl_map_list_size(dependences_list);
+    for (int i = 0; i < nn; ++i) {
+        isl_map *dep = isl_map_list_get_at(dependences_list, i);
+        const char *dim_in_name = isl_map_get_tuple_name(dep, isl_dim_in);
+        const char *dim_out_name = isl_map_get_tuple_name(dep, isl_dim_out);
+        if (!strcmp(dim_in_name, dim_out_name)) {
+            dependences = isl_union_map_subtract(dependences, isl_union_map_from_map(dep));
+        } else {
+            isl_map_free(dep);
+        }
+    }
+    isl_map_list_free(dependences_list);
+    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "after delete self-dependences: ");
+    isl_union_map_dump(dependences);
+    if (isl_union_map_is_empty(dependences) == isl_bool_true) {
+        isl_union_map_free(dependences);
+        isl_union_map_free(writes);
+        isl_union_map_free(scoped_reads);
+        return node;
+    }
+
     isl_union_set *stmt = isl_union_map_domain(dependences);
     stmt = isl_union_set_universe(stmt);
     printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "stmt: ");
