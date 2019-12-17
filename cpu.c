@@ -771,7 +771,6 @@ static __isl_give isl_schedule_node *tile_band(
 	int n;
 	isl_space *space;
 	isl_multi_val *sizes;
-	isl_bool may_transfer = isl_bool_false;
 
 	ctx = isl_union_set_get_ctx(scop->domain);
 
@@ -782,34 +781,11 @@ static __isl_give isl_schedule_node *tile_band(
 	if (n <= 1)
 		return node;
 
-    if (isl_schedule_node_get_type(node) == isl_schedule_node_band) {
-        isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
-        if (isl_schedule_node_get_type(parent) == isl_schedule_node_filter) {
-            isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
-            isl_schedule_node_free(parent);
-            if (filter) {
-                isl_union_map *live_out = isl_union_map_intersect_domain(isl_union_map_copy(scop->live_out), filter);
-                if (isl_union_map_is_empty(live_out)) {
-                    isl_id *mark = isl_id_alloc(ctx, "skipped", NULL);
-                    node = isl_schedule_node_insert_mark(node, mark);
-                    isl_union_map_free(live_out);
-                    return node;
-                } else {
-                    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "maybe need transfer statement!");
-                    may_transfer = isl_bool_true;
-                    isl_union_map_free(live_out);
-                }
-            }
-        } else {
-            isl_schedule_node_free(parent);
-        }
-    }
-
 	space = isl_schedule_node_band_get_space(node);
 	sizes = ppcg_multi_val_from_int(space, scop->options->tile_size);
 	
 	//TODO: check stencil_partern before scheduling
-	int stencil_partern = 0;
+	int stencil_partern = 1;
 	if(stencil_partern && scop->options->split_tile){
 		//TODO: why isl_ctx always warns?
 		//sizes = split_tile_read_tile_sizes(node, scop, &n);
@@ -820,36 +796,6 @@ static __isl_give isl_schedule_node *tile_band(
 		return overlapped_tile(node, scop, sizes);
 
 	node = tile(node, sizes);
-
-	if (may_transfer == isl_bool_true) {
-        isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
-        isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
-        isl_schedule_node_free(parent);
-        isl_union_map *fake_livein = isl_union_map_intersect_domain(isl_union_map_copy(scop->fake_livein), filter);
-        if (isl_union_map_is_empty(fake_livein) != isl_bool_true) {
-            isl_union_map *schedule = partialSchedule(node, isl_bool_true);
-            isl_union_set *tensors = isl_union_map_range(isl_union_map_copy(fake_livein));
-            tensors = isl_union_set_universe(tensors);
-            isl_set_list *tensor_list = isl_union_set_get_set_list(tensors);
-
-            node = isl_schedule_node_child(node, 0);
-            int n = isl_set_list_size(tensor_list);
-            for (int i = 0; i < n; ++i) {
-                isl_set *tensor = isl_set_list_get_at(tensor_list, i);
-                isl_union_map *reads = isl_union_map_intersect_range(isl_union_map_copy(fake_livein),
-                                           isl_union_set_from_set(tensor));
-                isl_union_map *scopedAccess = isl_union_map_apply_domain(isl_union_map_copy(reads),
-                                                  isl_union_map_copy(schedule));
-                node = insert_stmt_extension(node, reads, scopedAccess, scop);
-            }
-            node = isl_schedule_node_parent(node);
-
-            isl_set_list_free(tensor_list);
-            isl_union_set_free(tensors);
-            isl_union_map_free(schedule);
-            isl_union_map_free(fake_livein);
-        }
-    }
 
     return node;
 }
@@ -955,118 +901,6 @@ static __isl_give isl_schedule *optionally_compute_schedule(void *user)
 	return compute_cpu_schedule(ps);
 }
 
-
-static void dump_scop(struct ppcg_scop *scop)
-{
-    if (!scop)
-		printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "scop is null!");
-
-	if (scop->live_in) {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_in: ");
-		isl_union_map_dump(scop->live_in);
-	} else {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_in: null");
-	}
-
-	if (scop->fake_livein) {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "fake_livein: ");
-		isl_union_map_dump(scop->fake_livein);
-	} else {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "fake_livein: null");
-	}
-
-	if (scop->live_out) {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_out: ");
-		isl_union_map_dump(scop->live_out);
-	} else {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "live_out: null");
-	}
-
-    #if 0
-	if (scop->schedule) {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule: ");
-		isl_schedule_dump(scop->schedule);
-	} else {
-	    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule: null");
-	}
-	#endif
-}
-
-
-static void compute_filter_livein(struct ppcg_scop *ps, __isl_keep isl_schedule_node *node)
-{
-	isl_union_access_info *access;
-	isl_union_flow *flow;
-	isl_union_map *kills;
-	isl_union_set *filter;
-
-    isl_union_map *reads, *must_kills, *must_writes, *may_writes;
-    isl_union_map *livein;
-
-	if (isl_schedule_node_filter != isl_schedule_node_get_type(node))
-	    return;
-
-	filter = isl_schedule_node_filter_get_filter(node);
-    if (!filter) return;
-
-    reads = isl_union_map_intersect_domain(isl_union_map_copy(ps->reads),
-                isl_union_set_copy(filter));
-    must_kills = isl_union_map_intersect_domain(isl_union_map_copy(ps->must_kills),
-                     isl_union_set_copy(filter));
-    must_writes = isl_union_map_intersect_domain(isl_union_map_copy(ps->must_writes),
-                      isl_union_set_copy(filter));
-    may_writes = isl_union_map_intersect_domain(isl_union_map_copy(ps->may_writes), filter);
-
-	access = isl_union_access_info_from_sink(isl_union_map_copy(reads));
-
-    /* set kill */
-	kills = isl_union_map_union(must_kills, must_writes);
-	access = isl_union_access_info_set_kill(access, kills);
-
-	/* set may source */
-	access = isl_union_access_info_set_may_source(access, may_writes);
-
-	/* set schedule */
-	access = isl_union_access_info_set_schedule(access,
-				isl_schedule_copy(ps->schedule));
-
-	/* compute */
-	flow = isl_union_access_info_compute_flow(access);
-	livein = isl_union_flow_get_may_no_source(flow);
-	isl_union_flow_free(flow);
-
-	livein = isl_union_map_intersect_range(reads, isl_union_map_range(livein));
-
-	if (!livein) return;
-    if (ps->fake_livein)
-        ps->fake_livein = isl_union_map_union(ps->fake_livein, livein);
-    else
-        ps->fake_livein = livein;
-	return;
-}
-
-static void compute_fake_livein(struct ppcg_scop *ps, __isl_keep isl_schedule_node *node)
-{
-    if ((isl_schedule_node_sequence != isl_schedule_node_get_type(node))
-		&& (isl_schedule_node_sequence != isl_schedule_node_get_type(node)))
-    {
-        return;
-    }
-
-    isl_size n = isl_schedule_node_n_children(node);
-    for ( int i = 0; i < n; i++ )
-    {
-        node = isl_schedule_node_child(node, i);
-        compute_filter_livein(ps, node);
-        node = isl_schedule_node_parent(node);
-    }
-
-    if (ps->fake_livein)
-    {
-        ps->fake_livein = isl_union_map_subtract(ps->fake_livein, isl_union_map_copy(ps->live_in));
-	}
-}
-
 /* Compute a schedule based on the dependences in "ps" and
  * tile it if requested by the user.
  */
@@ -1083,21 +917,13 @@ static __isl_give isl_schedule *get_schedule(struct ppcg_scop *ps,
 	schedule = ppcg_get_schedule(ctx, options,
 				    &optionally_compute_schedule, ps);
 
-    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule: ");
-	isl_schedule_dump(schedule);
-
 	isl_schedule_node *node = isl_schedule_get_root(schedule);
 	node = isl_schedule_node_child(node, 0);
-	compute_fake_livein(ps, node);
 	isl_schedule_node_free(node);
-    //dump_scop(ps);
 
 	if (ps->options->tile || ps->options->split_tile || ps->options->rectangle) {
 		schedule = isl_schedule_map_schedule_node_bottom_up(schedule,
 							&tile_band, ps);
-
-        printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "schedule after tile: ");
-	    isl_schedule_dump(schedule);
 	}
 
 	return schedule;

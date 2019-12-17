@@ -4394,8 +4394,6 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 	int *tile_size;
 	isl_id *id;
 	isl_multi_val *sizes;
-	isl_bool may_transfer = isl_bool_false;
-	isl_bool must_transfer = isl_bool_false;
 
 	outer = is_outer_tilable(node);
 	if (outer < 0)
@@ -4411,31 +4409,8 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 			return node;
 	}
 
-    if (isl_schedule_node_get_type(node) == isl_schedule_node_band) {
-        isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
-        if (isl_schedule_node_get_type(parent) == isl_schedule_node_filter) {
-            isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
-            isl_schedule_node_free(parent);
-            if (filter) {
-                isl_union_map *live_out = isl_union_map_intersect_domain(isl_union_map_copy(scop->live_out), filter);
-                if (isl_union_map_is_empty(live_out)) {
-                    isl_id *mark = isl_id_alloc(gen->ctx, "skipped", NULL);
-                    node = isl_schedule_node_insert_mark(node, mark);
-                    isl_union_map_free(live_out);
-                    return node;
-                } else {
-                    printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "maybe need transfer statement!");
-                    may_transfer = isl_bool_true;
-                    isl_union_map_free(live_out);
-                }
-            }
-        } else {
-            isl_schedule_node_free(parent);
-        }
-    }
-
 	//TODO: check stencil_partern before scheduling
-	int stencil_partern = 0;
+	int stencil_partern = 1;
 	if(stencil_partern && gen->options->split_tile)
 		return try_split_tile(gen, node);
 
@@ -4453,55 +4428,12 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 
 	node = tile_band(node, isl_multi_val_copy(sizes));
 
-    if (may_transfer == isl_bool_true) {
-        isl_schedule_node *parent = isl_schedule_node_parent(isl_schedule_node_copy(node));
-        isl_union_set *filter = isl_schedule_node_filter_get_filter(parent);
-        isl_schedule_node_free(parent);
-        isl_union_map *fake_livein = isl_union_map_intersect_domain(isl_union_map_copy(scop->fake_livein), filter);
-        node = isl_schedule_node_child(node, 0);
-        if (isl_union_map_is_empty(fake_livein) != isl_bool_true) {
-            must_transfer = isl_bool_true;
-            isl_union_map *schedule = partialSchedule(node, isl_bool_true);
-            isl_union_set *tensors = isl_union_map_range(isl_union_map_copy(fake_livein));
-            tensors = isl_union_set_universe(tensors);
-            isl_set_list *tensor_list = isl_union_set_get_set_list(tensors);
-
-            printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "before insert extension: ");
-            isl_schedule_node_dump(node);
-            node = isl_schedule_node_child(node, 0);
-            int n = isl_set_list_size(tensor_list);
-            for (int i = 0; i < n; ++i) {
-                isl_set *tensor = isl_set_list_get_at(tensor_list, i);
-                isl_union_map *reads = isl_union_map_intersect_range(isl_union_map_copy(fake_livein),
-                                           isl_union_set_from_set(tensor));
-                isl_union_map *scopedAccess = isl_union_map_apply_domain(isl_union_map_copy(reads),
-                                                  isl_union_map_copy(schedule));
-                node = insert_stmt_extension(node, reads, scopedAccess, scop);
-            }
-            node = isl_schedule_node_parent(node);
-            printf("\r\n %s(%d) %s \r\n", __FILE__, __LINE__, "after insert extension: ");
-            isl_schedule_node_dump(node);
-
-            isl_set_list_free(tensor_list);
-            isl_union_set_free(tensors);
-            isl_union_map_free(schedule);
-            isl_union_map_free(fake_livein);
-        }
-        node = isl_schedule_node_parent(node);
-    }
-
 	node = isl_schedule_node_child(node, 0);
 	if (gen->options->unroll_gpu_tile)
 		node = ppcg_set_schedule_node_type(node, isl_ast_loop_unroll);
 	id = isl_id_alloc(gen->ctx, "thread", NULL);
 	node = isl_schedule_node_insert_mark(node, id);
 	node = isl_schedule_node_parent(node);
-
-    if (must_transfer == isl_bool_true) {
-        scale = 0;
-    } else {
-	    scale = gen->options->scale_tile_loops;
-	}
 	node = gpu_create_kernel(gen, node, scale, sizes);
 	isl_multi_val_free(sizes);
 	free(tile_size);
@@ -6193,8 +6125,8 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 	schedule = get_schedule(gen);
 
 	//TODO: handle more complex cases or check stencil partern
-	int stencil_partern = 0;
-	if(stencil_partern)
+	int stencil_partern = 1;
+	if(stencil_partern && gen->options->split_tile)
 		schedule = force_coincidents(schedule);
 
 	any_permutable = has_any_permutable_node(schedule);
