@@ -36,6 +36,7 @@
 #include "print.h"
 #include "util.h"
 #include "split_tiling.h"
+#include "overlapped_tiling.h"
 
 struct gpu_array_info;
 
@@ -3041,6 +3042,17 @@ static __isl_give isl_union_set *set_schedule_modulo(
 	ma = isl_multi_aff_zero(space);
 
 	domain = isl_schedule_node_get_universe_domain(node);
+	
+	// check expansion for overlapped tiling
+	if(isl_union_set_is_empty(domain)) {
+		isl_union_set_free(domain);
+		isl_schedule_node *expansion = isl_schedule_node_copy(node);
+		while(isl_schedule_node_get_type(expansion) != isl_schedule_node_expansion)
+			expansion = isl_schedule_node_parent(expansion);
+		domain = isl_schedule_node_get_universe_domain(expansion);
+		isl_schedule_node_free(expansion);
+	}
+
 	mupa2 = isl_multi_union_pw_aff_multi_aff_on_domain(
 						isl_union_set_copy(domain), ma);
 	mupa = isl_multi_union_pw_aff_range_product(mupa2, mupa);
@@ -3955,6 +3967,11 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 	if (!kernel->options->wrap)
 		node = snap_band_to_sizes(node, kernel->block_dim,
 						kernel->options);
+
+	// Insert the filter before expansion node when applying overlapped tiling
+	if (gen->options->rectangle)
+		while(isl_schedule_node_get_type(node) != isl_schedule_node_expansion)
+			node = isl_schedule_node_parent(node);
 	node = isl_schedule_node_insert_filter(node,
 				    isl_union_set_copy(kernel->thread_filter));
 	if (kernel_requires_unroll(kernel)) {
@@ -3962,7 +3979,11 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 		node = unroll(node);
 	}
 
-	node = gpu_tree_move_up_to_thread(node);
+	// Traverse the gpu tree correctly for overlapped tiling
+	if (gen->options->rectangle)
+		node = gpu_tree_move_down_to_thread(node, kernel->core);
+	else
+		node = gpu_tree_move_up_to_thread(node);
 	kernel->copy_schedule_dim = isl_schedule_node_get_schedule_depth(node);
 	kernel->copy_schedule =
 		isl_schedule_node_get_prefix_schedule_union_pw_multi_aff(node);
@@ -4155,6 +4176,67 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 	return node;
 }
 
+/* See if overlapped tiling can be performed on "node".
+ * If so, apply overlapped tiling and return the updated schedule tree.
+ * If not, return the original schedule tree.
+ * Return NULL on error.
+ *
+ * First check if "node", together with its parent, meets
+ * the basic requirements for overlapped tiling.
+ * If so, compute the relative dependence distances of "node"
+ * with respect to its parent and check if they are sufficiently bounded.
+ * If so, apply overlapped tiling using user specified tile sizes.
+ *
+ * The tile sizes are read before the dependence distance bounds are
+ * computed, because the user may have specified fewer dimensions
+ * than are available.  In this case, the remaining schedule dimensions
+ * are split off and the dependence distances should be computed
+ * after these dimensions have been split off.
+ */
+static __isl_give isl_schedule_node *try_overlapped_tile(struct gpu_gen *gen,
+	__isl_take isl_schedule_node *node)
+{
+	int tile_len;
+	int *tile_size;
+	int scale;
+	int i;
+	isl_id *id;
+	isl_multi_val *sizes, *sub_sizes;
+
+	tile_len = isl_schedule_node_band_n_member(node);
+	tile_size = read_tile_sizes(gen, &tile_len);
+	if (!tile_size)
+		return isl_schedule_node_free(node);
+	
+	if (tile_len < isl_schedule_node_band_n_member(node))
+		node = isl_schedule_node_band_split(node, tile_len);
+	sizes = construct_band_tiles_sizes(node, tile_size);
+	node = overlapped_tile(node, gen->prog->scop, sizes, 0, 1);
+	node = isl_schedule_node_band_split(node, 1);
+	node = isl_schedule_node_child(node, 0);
+	
+	node = isl_schedule_node_child(node, 0);
+	node = isl_schedule_node_child(node, 0);
+	node = isl_schedule_node_child(node, 0);
+	//isl_schedule_node_dump(node);
+
+	id = isl_id_alloc(gen->ctx, "thread", NULL);
+	node = isl_schedule_node_insert_mark(node, id);
+
+	node = isl_schedule_node_parent(node);
+	node = isl_schedule_node_parent(node);
+	node = isl_schedule_node_parent(node);
+
+	scale = gen->options->scale_tile_loops;
+	tile_size = tile_size + 1;
+	sub_sizes = construct_band_tiles_sizes(node, tile_size);
+	node = gpu_create_kernel(gen, node, 0, sub_sizes);
+	node = isl_schedule_node_parent(node);
+	isl_multi_val_free(sub_sizes);
+
+	return node;
+}
+
 struct ppcg_mark_outer_data {
 	struct gpu_gen *gen;
 	struct ppcg_scop *scop;
@@ -4215,6 +4297,9 @@ static __isl_give isl_schedule_node *mark_outer_permutable(
 	int stencil_partern = 1;
 	if(stencil_partern && gen->options->split_tile)
 		return try_split_tile(gen, node);
+
+	if(stencil_partern && gen->options->rectangle)
+		return try_overlapped_tile(gen, node);
 
 	if (isl_schedule_node_get_type(node) != isl_schedule_node_band ||
 	    !isl_schedule_node_band_member_get_coincident(node, 0))
@@ -5809,7 +5894,8 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 
 	//TODO: handle more complex cases or check stencil partern
 	int stencil_partern = 1;
-	if(stencil_partern && gen->options->split_tile)
+	if(stencil_partern && 
+		(gen->options->split_tile || gen->options->rectangle))
 		schedule = force_coincidents(schedule);
 
 	any_permutable = has_any_permutable_node(schedule);

@@ -704,7 +704,11 @@ static int obtain_space_dim_size(__isl_take isl_set *domain,
 }
 
 /* Apply overlapped tiling on demand. "multi_dim" indicates whether multiple level
- * overlapped tiling should be performed.
+ * overlapped tiling should be performed. "after_mapping" is a flag indicating wheter
+ * the expansion and contraction nodes should be inserted after gpu mapping. The
+ * expansion node, together with its contraction node, can be inserted between the
+ * tile band and point band when generating OpenMP code. On the other hand, it should
+ * be inserted undernearth the point band of time dimension.
  * 
  * First check whether the tile sizes of those that to be applied overlapped tiling
  * are greater than the extents of these space dimensions. Return parallelogram
@@ -720,7 +724,8 @@ static int obtain_space_dim_size(__isl_take isl_set *domain,
  * trees.
  */
 __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node,
-		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes, int multi_dim)
+		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes, int multi_dim,
+        int after_mapping)
 {
     int i, j, k, n;
     int shift, dim ,bound, overlapped;
@@ -789,8 +794,18 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     // insert expension node
     child = isl_schedule_node_get_child(node, 0);
     isl_schedule_node_free(node);
-    child = isl_schedule_node_insert_expansion(child, contraction, expansion);
-    node = isl_schedule_node_parent(child);
+    if (after_mapping) {
+        child = isl_schedule_node_band_split(child, 1);
+        node = isl_schedule_node_get_child(child, 0);
+        isl_schedule_node_free(child);
+        node = isl_schedule_node_insert_expansion(node, contraction, expansion);
+        node = isl_schedule_node_parent(node);
+        node = isl_schedule_node_parent(node);
+    }
+    else {
+        child = isl_schedule_node_insert_expansion(child, contraction, expansion);
+        node = isl_schedule_node_parent(child);
+    }
 
     return node;
 }
