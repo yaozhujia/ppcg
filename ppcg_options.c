@@ -107,6 +107,10 @@ ISL_ARG_BOOL(struct ppcg_options, rectangle, 0, "rectangle", 0,
 ISL_ARG_BOOL(struct ppcg_options, min_sync, 0, "min-sync", 0,
 	"minimize synchronization when performing split tiling"
 	"(only for C target)")
+ISL_ARG_BOOL(struct ppcg_options, isolate_expanded_points, 0, "isolate-expanded-points",
+	0, "isolate expanded point loops from original points (overlapped tiling)")
+ISL_ARG_BOOL(struct ppcg_options, multi_level_overlapped, 0, "multi-level-overlapped",
+	0, "perform multi-level overlapped (overlapped tiling for GPU targets)")
 ISL_ARG_STR(struct ppcg_options, tile_sizes, 0, "tile-sizes", "tile-sizes", NULL,
 	"tile sizes (for different sizes)")
 ISL_ARG_INT(struct ppcg_options, tile_size, 'S', "tile-size", "size", 32, NULL)

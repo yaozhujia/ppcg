@@ -624,6 +624,50 @@ error:
 }
 
 /* Extract user specified "block" sizes from the "sizes" command line option,
+ * defaulting to option->block_size in each dimension.
+ * *blk_len contains the maximum number of tile sizes needed.
+ * Update *blk_len to the number of specified block sizes, if any, and
+ * return a pointer to the block sizes (or NULL on error).
+ */
+static int *read_blk_sizes(struct gpu_gen *gen, int *blk_len)
+{
+	int n;
+	int *block_size;
+	isl_set *size;
+
+	block_size = isl_alloc_array(gen->ctx, int, *blk_len);
+	if (!block_size)
+		return NULL;
+
+	if (*blk_len > 3)
+		*blk_len = 3;
+	switch (*blk_len) {
+	case 1:
+		block_size[0] = 512;
+		break;
+	case 2:
+		block_size[0] = 32;
+		block_size[1] = 16;
+		break;
+	default:
+		block_size[0] = 32;
+		block_size[1] = 4;
+		block_size[2] = 4;
+		break;
+	}
+
+	size = extract_sizes(gen->sizes, "block", gen->kernel_id);
+	if (read_sizes_from_set(size, block_size, blk_len) < 0)
+		goto error;
+	set_used_sizes(gen, "block", gen->kernel_id, block_size, *blk_len);
+
+	return block_size;
+error:
+	free(block_size);
+	return NULL;
+}
+
+/* Extract user specified "block" sizes from the "sizes" command line option,
  * after filling in some potentially useful defaults.
  */
 static isl_stat read_block_sizes(struct ppcg_kernel *kernel,
@@ -4196,29 +4240,45 @@ static __isl_give isl_schedule_node *try_split_tile(struct gpu_gen *gen,
 static __isl_give isl_schedule_node *try_overlapped_tile(struct gpu_gen *gen,
 	__isl_take isl_schedule_node *node)
 {
-	int tile_len;
-	int *tile_size;
-	int scale;
-	int i;
+	int tile_len, block_len;
+	int *tile_size, *block_size;
+	int i, n;
 	isl_id *id;
 	isl_multi_val *sizes, *sub_sizes;
 
 	tile_len = isl_schedule_node_band_n_member(node);
+	n = tile_len;
+	// force multi_level_overlapped to be equal to 0
+	// for one dimensional cases
+	if (gen->options->multi_level_overlapped && n <= 2)
+		gen->options->multi_level_overlapped = 0;
+	
 	tile_size = read_tile_sizes(gen, &tile_len);
 	if (!tile_size)
+		return isl_schedule_node_free(node);
+	// read block size before constructing kernel
+	// we currently only support single kernel cases
+	// TODO: multiple kernel cases
+	block_len = isl_schedule_node_band_n_member(node);
+	block_size = read_blk_sizes(gen, &block_len);
+	if (!block_size)
 		return isl_schedule_node_free(node);
 	
 	if (tile_len < isl_schedule_node_band_n_member(node))
 		node = isl_schedule_node_band_split(node, tile_len);
+	
 	sizes = construct_band_tiles_sizes(node, tile_size);
-	node = overlapped_tile(node, gen->prog->scop, sizes, 0, 1);
+	node = overlapped_tile(node, gen->prog->scop, sizes, block_size, block_len, 1);
 	node = isl_schedule_node_band_split(node, 1);
 	node = isl_schedule_node_child(node, 0);
+	if (!gen->options->multi_level_overlapped && n > 2) {
+		node = isl_schedule_node_band_split(node, 1);
+		node = isl_schedule_node_child(node, 0);
+	}
 	
 	node = isl_schedule_node_child(node, 0);
 	node = isl_schedule_node_child(node, 0);
 	node = isl_schedule_node_child(node, 0);
-	//isl_schedule_node_dump(node);
 
 	id = isl_id_alloc(gen->ctx, "thread", NULL);
 	node = isl_schedule_node_insert_mark(node, id);
@@ -4226,8 +4286,9 @@ static __isl_give isl_schedule_node *try_overlapped_tile(struct gpu_gen *gen,
 	node = isl_schedule_node_parent(node);
 	node = isl_schedule_node_parent(node);
 	node = isl_schedule_node_parent(node);
+	if (!gen->options->multi_level_overlapped && n > 2)
+		node = isl_schedule_node_parent(node);
 
-	scale = gen->options->scale_tile_loops;
 	tile_size = tile_size + 1;
 	sub_sizes = construct_band_tiles_sizes(node, tile_size);
 	node = gpu_create_kernel(gen, node, 0, sub_sizes);

@@ -42,6 +42,12 @@ struct ppcg_options {
 	int rectangle;
 	int scalene;
 
+	/* Isolate expanded points from original points. */
+	int isolate_expanded_points;
+
+	/* Perform multi-level overlapped tiling on GPUs*/\
+	int multi_level_overlapped;
+
 	/* Isolate full tiles from partial tiles. */
 	int isolate_full_tiles;
 

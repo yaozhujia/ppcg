@@ -381,6 +381,9 @@ struct overlapped_data {
     isl_union_map *result;
     isl_union_map *dep;
     isl_multi_val *sizes;
+    int isolate_expanded_points;
+    int *block_sizes;
+    int block_len;
     int multi_dim;
     int after_mapping;
 };
@@ -481,8 +484,12 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
         
         // construct upper bound affine expr
         aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, j);
-        val = isl_multi_val_get_val(data->sizes, j);
-        val = isl_val_sub_ui(val, 1);
+        if (data->isolate_expanded_points)
+            val = isl_val_int_from_si(isl_multi_val_get_ctx(data->sizes), -1);
+        else {
+            val = isl_multi_val_get_val(data->sizes, j);
+            val = isl_val_sub_ui(val, 1);
+        }
         aff = isl_aff_add_constant_val(aff, val);
         sub = isl_aff_var_on_domain(ls, isl_dim_set, j + dim);
         aff = isl_aff_sub(aff, sub);
@@ -550,8 +557,9 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
         // and finally construct mapping constraints on demand
         if(data->after_mapping) {
             set = isl_map_wrap(map);
-            copy = isl_aff_mod_val(copy, isl_multi_val_get_val(data->sizes, j));
-            c = isl_inequality_from_aff(aff);
+            copy = isl_aff_mod_val(copy, 
+                isl_val_int_from_si(ctx, data->block_sizes[j]));
+            c = isl_equality_from_aff(aff);
             set = isl_set_add_constraint(set, c);
             map = isl_set_unwrap(set);
         }
@@ -580,7 +588,7 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
 static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
     __isl_take isl_union_map *expansion, __isl_take isl_union_set *domain,
     __isl_take isl_multi_union_pw_aff *mupa, __isl_take isl_multi_val *sizes, 
-    int multi_dim, int after_mapping)
+    int *block_sizes, int block_len, int after_mapping)
 {
     int i, dim;
     isl_val *size;
@@ -591,21 +599,20 @@ static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
     space = isl_union_map_get_space(expansion);
     umap = isl_union_map_empty(space);
     result = isl_union_map_copy(umap);
-    struct multi_dim_data mdata = { umap, multi_dim };
+    struct multi_dim_data mdata = { umap, scop->options->multi_level_overlapped};
 
     isl_union_map_foreach_map(expansion, &drop_space_dim_constraints, &mdata);
     isl_union_map_free(expansion);
 
-    struct expansion_data data = { result, domain, multi_dim };
+    struct expansion_data data = { result, domain, scop->options->multi_level_overlapped };
     isl_union_map_foreach_map(mdata.umap, &add_space_dim_bounds, &data);
     isl_union_map_free(mdata.umap);
     isl_union_set_free(data.domain);
-    isl_union_map_dump(data.expansion);
     
     if (!after_mapping) {
         dim = isl_multi_union_pw_aff_dim(mupa, isl_dim_out);
         // construct starting point constraint for the first "multi_dim + 1" space dimensions
-        for (i = 1; i <= multi_dim + 1; i++) {
+        for (i = 1; i <= scop->options->multi_level_overlapped + 1; i++) {
             upa = isl_multi_union_pw_aff_get_union_pw_aff(mupa, i);
             data.expansion = construct_starting_point(data.expansion, 
                 upa, isl_multi_val_copy(sizes), i);
@@ -621,12 +628,13 @@ static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
     dep = isl_union_map_gist_domain(dep, isl_union_set_copy(domain));
     dep = isl_union_map_gist_range(dep, isl_union_set_copy(domain));
 
-    struct overlapped_data overlap = { data.expansion, umap, dep, sizes, multi_dim, after_mapping };
+    struct overlapped_data overlap = { data.expansion, umap, dep, sizes,
+        scop->options->isolate_expanded_points, block_sizes, block_len, 
+        scop->options->multi_level_overlapped, after_mapping };
     isl_union_map_foreach_map(overlap.expansion, &construct_overlapped_cond, &overlap);
     isl_multi_val_free(overlap.sizes);
     isl_union_map_free(overlap.expansion);
     isl_union_map_free(overlap.dep);
-    isl_union_map_dump(overlap.result);
 
     return overlap.result;
 }
@@ -749,18 +757,17 @@ static int obtain_space_dim_size(__isl_take isl_set *domain,
  * trees.
  */
 __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node,
-		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes, int multi_dim,
-        int after_mapping)
+		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes, int *block_sizes,
+        int block_len, int after_mapping)
 {
-    int i, j, k, n;
+    int i, j, k, n, n_member;
     int shift, dim ,bound, overlapped;
     isl_ctx *ctx;
     isl_set *set;
     isl_val *val, *size;
     isl_set_list *list;
     isl_union_set *domain, *empty, *universe;
-    isl_union_map *expansion;
-    isl_schedule_node *child;
+    isl_union_map *expansion, *copy;
     isl_multi_union_pw_aff *mupa;
     isl_union_pw_multi_aff *contraction;
 
@@ -800,6 +807,7 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     }
     
     // apply parallelogram tiling without shifting point loops
+    n_member = isl_schedule_node_band_n_member(node);
     shift = isl_options_get_tile_shift_point_loops(ctx);
     isl_options_set_tile_shift_point_loops(ctx, 0);
 	node = isl_schedule_node_band_tile(node, isl_multi_val_copy(sizes));
@@ -814,23 +822,28 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     // first construct an identity mapping and then update the expansion
     universe = isl_union_set_universe(isl_union_set_copy(domain));
     expansion = isl_union_set_identity(universe);
+    copy = isl_union_map_copy(expansion);
     expansion = update_expansion(scop, expansion, domain, mupa, 
-        sizes, multi_dim, after_mapping);
+        sizes, block_sizes, block_len, after_mapping);
+    if (scop->options->isolate_expanded_points)
+        expansion = isl_union_map_union(expansion, copy);
+    else
+        isl_union_map_free(copy);
     
     // insert expension node
-    child = isl_schedule_node_get_child(node, 0);
-    isl_schedule_node_free(node);
+    node = isl_schedule_node_child(node, 0);
     if (after_mapping) {
-        child = isl_schedule_node_band_split(child, 1);
-        node = isl_schedule_node_get_child(child, 0);
-        isl_schedule_node_free(child);
+        node = isl_schedule_node_band_split(node, 1);
+        node = isl_schedule_node_child(node, 0);
+        if (!scop->options->multi_level_overlapped && n_member > 2)
+            node = isl_schedule_node_band_split(node, 1);
         node = isl_schedule_node_insert_expansion(node, contraction, expansion);
         node = isl_schedule_node_parent(node);
         node = isl_schedule_node_parent(node);
     }
     else {
-        child = isl_schedule_node_insert_expansion(child, contraction, expansion);
-        node = isl_schedule_node_parent(child);
+        node = isl_schedule_node_insert_expansion(node, contraction, expansion);
+        node = isl_schedule_node_parent(node);
     }
 
     return node;

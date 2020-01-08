@@ -7,6 +7,6 @@
 
 __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node,
 		struct ppcg_scop *scop, __isl_take isl_multi_val *sizes,
-		int multi_dim, int after_mapping);
+		int *block_sizes, int block_len, int after_mapping);
 
 #endif
