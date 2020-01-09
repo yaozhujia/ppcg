@@ -1212,7 +1212,6 @@ __isl_give isl_multi_val *split_tile_read_tile_sizes(__isl_keep isl_schedule_nod
 		tile_size[i] = scop->options->tile_size;
 
 	size = isl_set_read_from_str(ctx, scop->options->tile_sizes);
-	isl_set_dump(size);
 
 	if (read_sizes_from_set(size, tile_size, tile_len) < 0)
 		goto error;
