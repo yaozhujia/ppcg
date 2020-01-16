@@ -644,8 +644,11 @@ static __isl_give isl_schedule_node *tile_band(
 		return split_tile(node, scop, sizes);
 	}
 	
-	if(stencil_partern && scop->options->rectangle)
+	if(stencil_partern && scop->options->rectangle) {
+		if (!scop->options->isolate_expanded_points)
+			scop->options->isolate_expanded_points = 1;
 		return overlapped_tile(node, scop, sizes, NULL, 0, 0);
+	}
 
 	return tile(node, sizes);
 }

@@ -737,11 +737,11 @@ static int obtain_space_dim_size(__isl_take isl_set *domain,
 }
 
 /* Apply overlapped tiling on demand. "multi_dim" indicates whether multiple level
- * overlapped tiling should be performed. "after_mapping" is a flag indicating wheter
+ * overlapped tiling should be performed. "after_mapping" is a flag indicating whether
  * the expansion and contraction nodes should be inserted after gpu mapping. The
  * expansion node, together with its contraction node, can be inserted between the
  * tile band and point band when generating OpenMP code. On the other hand, it should
- * be inserted undernearth the point band of time dimension.
+ * be inserted underneath the point band of time dimension.
  * 
  * First check whether the tile sizes of those that to be applied overlapped tiling
  * are greater than the extents of these space dimensions. Return parallelogram
