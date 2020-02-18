@@ -8,7 +8,6 @@
  * Ecole Normale Superieure, 45 rue d'Ulm, 75005 Paris, France
  */
 
-
 #include <stdlib.h>
 #include <string.h>
 
@@ -330,7 +329,7 @@ struct maxmin_data {
 static isl_stat obtain_maxmin_in_bmap(__isl_take isl_basic_map *bmap, void *user) {
     int i, n, dim;
     isl_aff *aff;
-    isl_val *val, *copy, *max, *min;
+    isl_val *val, *coeff, *copy, *max, *min;
     isl_basic_set *bset;
     isl_constraint *c;
     isl_constraint_list *clist;
@@ -346,7 +345,9 @@ static isl_stat obtain_maxmin_in_bmap(__isl_take isl_basic_map *bmap, void *user
     clist = isl_basic_map_get_constraint_list(bmap);
     for (i = 0; i < isl_constraint_list_n_constraint(clist); i++) {
         c = isl_constraint_list_get_constraint(clist, i);
-        val = isl_constraint_get_coefficient_val(c, isl_dim_out, data->dim);
+        coeff = isl_constraint_get_coefficient_val(c, isl_dim_out, data->dim);
+        val = isl_constraint_get_constant_val(c);
+        val = isl_val_mul(val, coeff);
         isl_constraint_free(c);
         n = isl_val_list_n_val(data->list);
         if (n == 0) {
@@ -376,11 +377,251 @@ static isl_stat obtain_maxmin_in_bmap(__isl_take isl_basic_map *bmap, void *user
     return isl_stat_ok;
 }
 
+
+/* Drop "str" from "name".
+ */
+static char *drop_str(char *str, char *sub)
+{
+    char *p;
+	
+	p = str;
+
+    while (*p && *sub){
+        char *s1 = p;
+        char *s2 = sub;
+        while (*s1 && *s2 && !(*s1 - *s2)){
+            s1++;
+            s2++;
+        }
+        if (!*s2){
+            while ((*p++=*s1++));
+            p = str;  
+        }
+        p++;
+    }
+
+    return str;
+}
+
+/* Drop braces from "name". In particular, this function also delete
+ * all blanks from "name".
+ */
+static char *drop_braces(char *name)
+{
+	char *str;
+
+	str = "{";
+	name = drop_str(name, str);
+
+	str = "}";
+	name = drop_str(name, str);
+
+	str = " ";
+	name = drop_str(name, str);
+
+	return name;
+}
+
+/* Drop brackets from "name".
+ */
+static char *drop_brackets(char *name)
+{
+	char *str;
+
+	str = "[";
+	name = drop_str(name, str);
+
+	str = "]";
+	name = drop_str(name, str);
+
+	return name;
+}
+
+/* Drop "->" from "name".
+ */
+static char *drop_parameters_and_to(char *name)
+{
+	int i, n;
+
+	n = strlen(name);
+
+	for (i=0; i<n-4; i++)
+		if ( name[i] == '-' && name[i+1] == '>'){
+			printf("%s\n",&name[i+2]);
+        	return &name[i+2];
+		}
+
+	return name;
+}
+
+/* Insert "sub" to "str" at "loc".
+ */
+static char *insert_str(char *s1, char *s2, int f)
+{
+    char *cp, *tcp;
+ 
+    tcp = s1 + strlen(s1);
+    cp = s1 + f;
+ 
+    if(tcp < cp)
+        return s1;
+ 
+    while(tcp >= cp)
+    {
+        *(tcp + strlen(s2)) = *tcp;
+        tcp--;
+    }
+ 
+    while(*s2 != '\0')
+    {
+        *cp = *s2;
+        cp++;
+        s2++;
+    }
+	
+	return s1;
+}
+
+/* Add parentheses to "name".
+ */
+static char *add_parentheses(char *name)
+{
+	char *str;
+
+	str = "(";
+	name = insert_str(name, str, 0);
+
+	str = ")";
+	name = strcat(name, str);
+
+	return name;
+}
+
+/* Add braces to "name".
+ */
+static char *add_braces(char *name)
+{
+	char *str;
+
+	str = "{ ";
+	name = insert_str(name, str, 0);
+
+	str = " }";
+	name = strcat(name, str);
+
+	return name;
+}
+
+static __isl_give isl_map* add_mapping_interval(__isl_take isl_map *map,
+__isl_take isl_aff *extent, __isl_keep isl_aff *range, __isl_take isl_union_pw_aff *upa,
+__isl_keep isl_multi_val *sizes, int pos) {
+    isl_ctx *ctx;
+    isl_aff *aff, *bound;
+    isl_map *universe;
+    isl_val *size;
+    isl_space *space;
+    isl_union_set *uset;
+    isl_pw_aff *pa;
+    isl_pw_aff_list *list;
+    char cst[4096];
+    char *str, *str0, *str1, *str2, *str3;
+    str = (char *) calloc(256, sizeof(char));
+    str0 = (char *) calloc(256, sizeof(char));
+    str1 = (char *) calloc(256, sizeof(char));
+    str2 = (char *) calloc(256, sizeof(char));
+    str3 = (char *) calloc(256, sizeof(char));
+
+    ctx = isl_aff_get_ctx(extent);
+    space = isl_aff_get_domain_space(extent);
+    str0 = isl_space_to_str(space);
+    str0 = drop_braces(str0);
+    isl_space_free(space);
+
+    bound = isl_aff_add_constant_si(isl_aff_copy(extent), -1);
+    size = isl_multi_val_get_val(sizes, pos);
+    bound = isl_aff_mod_val(bound, isl_val_copy(size));
+    str1 = isl_aff_to_str(bound);
+    str1 = drop_braces(str1);
+    str1 = drop_str(str1, str0);
+    str1 = drop_str(str1, "->");
+    str1 = drop_brackets(str1);
+    isl_aff_free(bound);
+    
+    str2 = isl_aff_to_str(range);
+    str2 = drop_braces(str2);
+    str2 = drop_str(str2, str0);
+    str2 = drop_str(str2, "->");
+    str2 = drop_brackets(str2);
+
+    space = isl_map_get_space(map);
+    universe = isl_map_universe(space);
+    strcpy(cst, isl_map_to_str(universe));
+    isl_map_free(universe);
+
+    drop_braces(cst);
+    strcpy(str0, cst);
+
+    strcat(cst, " : exists e0 : ");
+    strcat(cst, "0 <= e0 <= ");
+    strcat(cst, str1);
+    strcat(cst, " and ");
+
+    strcat(cst, str2);
+    strcat(cst, " = ");
+    strcat(cst, isl_val_to_str(size));
+    strcat(cst, "*e0 ");
+    strcat(cst, " and ");
+
+    // todo: multi stmt case
+    list = isl_union_pw_aff_get_pw_aff_list(upa);
+    uset = isl_union_pw_aff_domain(upa);
+    str1 = isl_union_set_to_str(uset);
+    str1 = drop_braces(str1);
+    isl_union_set_free(uset);
+    pa = isl_pw_aff_list_get_pw_aff(list, 0);
+    isl_pw_aff_foreach_piece(pa, &extract_single_piece, &aff);
+    isl_pw_aff_list_free(list);
+    isl_pw_aff_free(pa);
+
+    aff = isl_aff_mod_val(aff, isl_val_copy(size));
+    str3 = isl_aff_to_str(aff);
+    isl_aff_free(aff);
+
+    str3 = drop_braces(str3);
+    str3 = drop_str(str3, str1);
+    str3 = drop_str(str3, "->");
+    str3 = drop_brackets(str3);
+
+    str2 = isl_aff_to_str(extent);
+    isl_aff_free(extent);
+    str2 = drop_braces(str2);
+    str2 = drop_str(str2, str0);
+    str2 = drop_str(str2, "->");
+    str2 = drop_brackets(str2);
+
+    str3 = strcat(str3, " < ");
+    str3 = strcat(str3, str2);
+    str3 = strcat(str3, " - ");
+    str3 = strcat(str3, isl_val_to_str(size));
+    str3 = strcat(str3, "*e0");
+    isl_val_free(size);
+    strcat(cst, str3);
+    add_braces(cst);
+    printf("cst is %s\n", cst);
+
+    universe = isl_map_read_from_str(ctx, cst);
+    isl_map_dump(map);
+    map = isl_map_intersect(map, universe);
+
+    return map;
+}
+
 struct overlapped_data {
     isl_union_map *expansion;
     isl_union_map *result;
     isl_union_map *dep;
     isl_multi_val *sizes;
+    isl_multi_union_pw_aff *mupa;
     int isolate_expanded_points;
     int *block_sizes;
     int block_len;
@@ -458,7 +699,7 @@ struct overlapped_data {
 static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
     int i, j, dim;
     const char *map_name, *dep_name;
-    isl_aff *aff, *sub, *copy;
+    isl_aff *aff, *sub, *copy, *extent;
     isl_ctx *ctx;
     isl_map *candidate;
     isl_set *set, *domain;
@@ -468,6 +709,7 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
     isl_val_list *vlist;
     isl_constraint *c;
     isl_local_space *ls;
+    isl_union_pw_aff *upa;
     struct overlapped_data *data = user;
 
     set = isl_map_domain(isl_map_copy(map));
@@ -543,6 +785,8 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
         sub = isl_aff_scale_val(sub, rev);
         sub = isl_aff_add_constant_val(sub, val);
         sub = isl_aff_scale_val(sub, coeff);
+        if(data->after_mapping)
+            extent = isl_aff_copy(sub);
         aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, j);
         sub = isl_aff_sub(aff, sub);
 
@@ -553,18 +797,12 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
         c = isl_inequality_from_aff(aff);
         set = isl_set_add_constraint(set, c);
         map = isl_set_unwrap(set);
-
         // and finally construct mapping constraints on demand
         if(data->after_mapping) {
-            set = isl_map_wrap(map);
-            copy = isl_aff_mod_val(copy, 
-                isl_val_int_from_si(ctx, data->block_sizes[j]));
-            c = isl_equality_from_aff(aff);
-            set = isl_set_add_constraint(set, c);
-            map = isl_set_unwrap(set);
+            upa = isl_multi_union_pw_aff_get_union_pw_aff(data->mupa, j);
+            map = add_mapping_interval(map, extent, copy, upa, data->sizes, j);
         }
-        else
-            isl_aff_free(copy);
+        isl_aff_free(copy);
     }
     
     data->result = isl_union_map_add_map(data->result, map);
@@ -618,7 +856,6 @@ static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
                 upa, isl_multi_val_copy(sizes), i);
         }
     }
-    isl_multi_union_pw_aff_free(mupa);
 
     // construct overlapped constraints
     space = isl_union_map_get_space(data.expansion);
@@ -628,13 +865,14 @@ static __isl_give isl_union_map* update_expansion(struct ppcg_scop *scop,
     dep = isl_union_map_gist_domain(dep, isl_union_set_copy(domain));
     dep = isl_union_map_gist_range(dep, isl_union_set_copy(domain));
 
-    struct overlapped_data overlap = { data.expansion, umap, dep, sizes,
+    struct overlapped_data overlap = { data.expansion, umap, dep, sizes, mupa,
         scop->options->isolate_expanded_points, block_sizes, block_len, 
         scop->options->multi_level_overlapped, after_mapping };
     isl_union_map_foreach_map(overlap.expansion, &construct_overlapped_cond, &overlap);
     isl_multi_val_free(overlap.sizes);
     isl_union_map_free(overlap.expansion);
     isl_union_map_free(overlap.dep);
+    isl_multi_union_pw_aff_free(mupa);
 
     return overlap.result;
 }
@@ -761,7 +999,7 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
         int block_len, int after_mapping)
 {
     int i, j, k, n, n_member;
-    int shift, dim ,bound, overlapped;
+    int tile, shift, dim ,bound, overlapped;
     isl_ctx *ctx;
     isl_set *set;
     isl_val *val, *size;
@@ -808,9 +1046,12 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     
     // apply parallelogram tiling without shifting point loops
     n_member = isl_schedule_node_band_n_member(node);
+    tile = isl_options_get_tile_scale_tile_loops(ctx);
     shift = isl_options_get_tile_shift_point_loops(ctx);
+    isl_options_set_tile_scale_tile_loops(ctx, 0);
     isl_options_set_tile_shift_point_loops(ctx, 0);
 	node = isl_schedule_node_band_tile(node, isl_multi_val_copy(sizes));
+    isl_options_set_tile_scale_tile_loops(ctx, tile);
     isl_options_set_tile_shift_point_loops(ctx, shift);
 
     // construct an empty contraction
