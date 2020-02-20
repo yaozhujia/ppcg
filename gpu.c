@@ -4014,7 +4014,7 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 						kernel->options);
 
 	// Insert the filter before expansion node when applying overlapped tiling
-	if (gen->options->rectangle)
+	if (gen->options->rectangle && gen->options->isolate_expanded_points)
 		while(isl_schedule_node_get_type(node) != isl_schedule_node_expansion)
 			node = isl_schedule_node_parent(node);
 	node = isl_schedule_node_insert_filter(node,
@@ -4025,7 +4025,7 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 	}
 
 	// Traverse the gpu tree correctly for overlapped tiling
-	if (gen->options->rectangle)
+	if (gen->options->rectangle && gen->options->isolate_expanded_points)
 		node = gpu_tree_move_down_to_thread(node, kernel->core);
 	else
 		node = gpu_tree_move_up_to_thread(node);
@@ -4036,6 +4036,9 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 	kernel->copy_schedule =
 		isl_union_pw_multi_aff_pullback_union_pw_multi_aff(
 					    kernel->copy_schedule, contraction);
+	
+	if (gen->options->rectangle)
+		node = gpu_tree_ensure_following_sync(node, kernel);
 
 	node = gpu_tree_move_up_to_kernel(node);
 
@@ -4302,28 +4305,26 @@ static __isl_give isl_schedule_node *try_overlapped_tile(struct gpu_gen *gen,
 	node = isl_schedule_node_child(node, 0);
 	node = isl_schedule_node_child(node, 0);
 	node = isl_schedule_node_child(node, 0);
-
-	if(gen->options->isolate_expanded_points) {
-		isl_schedule_tree *tree = isl_schedule_node_get_tree(node);
-		mupa = isl_schedule_node_band_get_partial_schedule(node);
-		for (i = 0; i < isl_schedule_node_band_n_member(node); i++) {
-			upa = isl_multi_union_pw_aff_get_union_pw_aff(mupa, i);
-			list = isl_union_pw_aff_get_pw_aff_list(upa);
-			isl_union_pw_aff_free(upa);
-			//todo: multiple stmts
-			pa = isl_pw_aff_list_get_pw_aff(list, 0);
-			isl_pw_aff_list_free(list);
-			isl_pw_aff_foreach_piece(pa, &extract_single_piece, &aff);
-			isl_pw_aff_free(pa);
-			aff = isl_aff_set_coefficient_si(aff, isl_dim_in, 0, 0);
-			pa = isl_pw_aff_from_aff(aff);
-			upa = isl_union_pw_aff_from_pw_aff(pa);
-			mupa = isl_multi_union_pw_aff_set_union_pw_aff(mupa, i, upa);
-		}
-
-		tree = isl_schedule_tree_band_set_partial_schedule(tree, mupa);
-		node = isl_schedule_node_graft_tree(node, tree);
+	
+	isl_schedule_tree *tree = isl_schedule_node_get_tree(node);
+	mupa = isl_schedule_node_band_get_partial_schedule(node);
+	for (i = 0; i < isl_schedule_node_band_n_member(node); i++) {
+		upa = isl_multi_union_pw_aff_get_union_pw_aff(mupa, i);
+		list = isl_union_pw_aff_get_pw_aff_list(upa);
+		isl_union_pw_aff_free(upa);
+		//todo: multiple stmts
+		pa = isl_pw_aff_list_get_pw_aff(list, 0);
+		isl_pw_aff_list_free(list);
+		isl_pw_aff_foreach_piece(pa, &extract_single_piece, &aff);
+		isl_pw_aff_free(pa);
+		aff = isl_aff_set_coefficient_si(aff, isl_dim_in, 0, 0);
+		pa = isl_pw_aff_from_aff(aff);
+		upa = isl_union_pw_aff_from_pw_aff(pa);
+		mupa = isl_multi_union_pw_aff_set_union_pw_aff(mupa, i, upa);
 	}
+
+	tree = isl_schedule_tree_band_set_partial_schedule(tree, mupa);
+	node = isl_schedule_node_graft_tree(node, tree);
 
 	id = isl_id_alloc(gen->ctx, "thread", NULL);
 	node = isl_schedule_node_insert_mark(node, id);

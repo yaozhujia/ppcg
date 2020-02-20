@@ -566,11 +566,11 @@ __isl_keep isl_multi_val *sizes, int pos) {
     strcat(cst, str1);
     strcat(cst, " and ");
 
-    strcat(cst, str2);
+    /*strcat(cst, str2);
     strcat(cst, " = ");
     strcat(cst, isl_val_to_str(size));
     strcat(cst, "*e0 ");
-    strcat(cst, " and ");
+    strcat(cst, " and ");*/
 
     // todo: multi stmt case
     list = isl_union_pw_aff_get_pw_aff_list(upa);
@@ -607,10 +607,8 @@ __isl_keep isl_multi_val *sizes, int pos) {
     isl_val_free(size);
     strcat(cst, str3);
     add_braces(cst);
-    printf("cst is %s\n", cst);
 
     universe = isl_map_read_from_str(ctx, cst);
-    isl_map_dump(map);
     map = isl_map_intersect(map, universe);
 
     return map;
@@ -785,7 +783,7 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
         sub = isl_aff_scale_val(sub, rev);
         sub = isl_aff_add_constant_val(sub, val);
         sub = isl_aff_scale_val(sub, coeff);
-        if(data->after_mapping)
+        if(data->isolate_expanded_points)
             extent = isl_aff_copy(sub);
         aff = isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set, j);
         sub = isl_aff_sub(aff, sub);
@@ -798,7 +796,7 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
         set = isl_set_add_constraint(set, c);
         map = isl_set_unwrap(set);
         // and finally construct mapping constraints on demand
-        if(data->after_mapping) {
+        if(data->isolate_expanded_points) {
             upa = isl_multi_union_pw_aff_get_union_pw_aff(data->mupa, j);
             map = add_mapping_interval(map, extent, copy, upa, data->sizes, j);
         }
@@ -1076,8 +1074,8 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     if (after_mapping) {
         node = isl_schedule_node_band_split(node, 1);
         node = isl_schedule_node_child(node, 0);
-        if (!scop->options->multi_level_overlapped && n_member > 2)
-            node = isl_schedule_node_band_split(node, 1);
+        //if (!scop->options->multi_level_overlapped && n_member > 2)
+            //node = isl_schedule_node_band_split(node, 1);
         node = isl_schedule_node_insert_expansion(node, contraction, expansion);
         node = isl_schedule_node_parent(node);
         node = isl_schedule_node_parent(node);
