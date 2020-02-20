@@ -4014,9 +4014,9 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 						kernel->options);
 
 	// Insert the filter before expansion node when applying overlapped tiling
-	if (gen->options->rectangle && gen->options->isolate_expanded_points)
+	/*if (gen->options->rectangle && gen->options->isolate_expanded_points)
 		while(isl_schedule_node_get_type(node) != isl_schedule_node_expansion)
-			node = isl_schedule_node_parent(node);
+			node = isl_schedule_node_parent(node);*/
 	node = isl_schedule_node_insert_filter(node,
 				    isl_union_set_copy(kernel->thread_filter));
 	if (kernel_requires_unroll(kernel)) {
@@ -4025,10 +4025,10 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 	}
 
 	// Traverse the gpu tree correctly for overlapped tiling
-	if (gen->options->rectangle && gen->options->isolate_expanded_points)
+	/*if (gen->options->rectangle && gen->options->isolate_expanded_points)
 		node = gpu_tree_move_down_to_thread(node, kernel->core);
-	else
-		node = gpu_tree_move_up_to_thread(node);
+	else*/
+	node = gpu_tree_move_up_to_thread(node);
 	kernel->copy_schedule_dim = isl_schedule_node_get_schedule_depth(node);
 	kernel->copy_schedule =
 		isl_schedule_node_get_prefix_schedule_union_pw_multi_aff(node);
