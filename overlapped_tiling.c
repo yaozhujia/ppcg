@@ -1002,8 +1002,8 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     isl_set *set;
     isl_val *val, *size;
     isl_set_list *list;
-    isl_union_set *domain, *empty, *universe;
-    isl_union_map *expansion, *copy;
+    isl_union_set *domain, *universe;
+    isl_union_map *expansion, *copy, *identity;
     isl_multi_union_pw_aff *mupa;
     isl_union_pw_multi_aff *contraction;
 
@@ -1052,10 +1052,11 @@ __isl_give isl_schedule_node *overlapped_tile(__isl_take isl_schedule_node *node
     isl_options_set_tile_scale_tile_loops(ctx, tile);
     isl_options_set_tile_shift_point_loops(ctx, shift);
 
-    // construct an empty contraction
+    // construct an identity contraction
     domain = isl_schedule_node_get_domain(node);
-    empty = isl_union_set_empty(isl_union_set_get_space(domain));
-    contraction = isl_union_pw_multi_aff_from_union_set(empty);
+    identity = isl_union_set_identity(
+        isl_union_set_universe(isl_union_set_copy(domain)));
+    contraction = isl_union_pw_multi_aff_from_union_map(identity);
 
     // construct the expansion
     // first construct an identity mapping and then update the expansion

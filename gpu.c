@@ -4036,9 +4036,6 @@ __isl_give isl_schedule_node *gpu_create_kernel(struct gpu_gen *gen,
 	kernel->copy_schedule =
 		isl_union_pw_multi_aff_pullback_union_pw_multi_aff(
 					    kernel->copy_schedule, contraction);
-	
-	if (gen->options->rectangle)
-		node = gpu_tree_ensure_following_sync(node, kernel);
 
 	node = gpu_tree_move_up_to_kernel(node);
 
