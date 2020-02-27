@@ -777,7 +777,7 @@ static isl_stat construct_overlapped_cond(__isl_take isl_map *map, void *user) {
         sub = isl_aff_sub(aff, sub);
 
         // next construct lower bound affine expr
-        val = isl_multi_val_get_val(data->sizes, j);
+        val = isl_multi_val_get_val(data->sizes, 0);
         val = isl_val_sub_ui(val, 1);
         rev = isl_val_int_from_si(ctx, -1);
         sub = isl_aff_scale_val(sub, rev);
